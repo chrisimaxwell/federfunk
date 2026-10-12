@@ -1,0 +1,4 @@
+platformio==6.2.0
+# Ensure upload-tool dependencies are available even when PlatformIO reuses
+# a cached SDK whose install hook ran in a different Python environment.
+esptool==4.9.0

@@ -1,0 +1,39 @@
+name: Verify FederFunk
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for private configuration and artifacts
+        run: python3 scripts/check_private_config.py
+      - name: Verify helper scripts and credential safeguards
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Verify large display mapping and failure cleanup
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -Itests/host -Isrc tests/large_panel_test.cpp src/Epaper13in3e.cpp \
+            -o /tmp/federfunk-large-panel-test
+          /tmp/federfunk-large-panel-test
+
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [esp32-s3, esp32-s3-13in3e6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build with placeholder configuration
+        run: pio run -e ${{ matrix.environment }}

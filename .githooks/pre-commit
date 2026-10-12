@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python scripts/check_private_config.py
+elif [ -f .venv/Scripts/python.exe ]; then
+  exec .venv/Scripts/python.exe scripts/check_private_config.py
+else
+  exec python3 scripts/check_private_config.py
+fi
