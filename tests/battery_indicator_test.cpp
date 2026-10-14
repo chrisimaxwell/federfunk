@@ -21,6 +21,22 @@ battery::Indicator evaluate(float volts, battery::Indicator previous = {},
 }
 
 int main(int argc, char** argv) {
+  using battery::ChargeState;
+  assert(battery::classifyCharge(32, 32, true, true) == ChargeState::Charging);
+  assert(battery::classifyCharge(0, 32, true, true) == ChargeState::NotCharging);
+  for (unsigned count : {1U, 15U, 31U, 33U})
+    assert(battery::classifyCharge(count, 32, true, true) == ChargeState::Unknown);
+  assert(battery::classifyCharge(8, 8, true, true) == ChargeState::Unknown);
+  assert(battery::classifyCharge(32, 32, false, true) == ChargeState::Unknown);
+  assert(battery::classifyCharge(32, 32, true, false) == ChargeState::Unknown);
+  battery::Indicator charging{true, false, 95, ChargeState::Charging};
+  battery::Indicator idle{true, false, 95, ChargeState::NotCharging};
+  assert(battery::key(charging) != battery::key(idle));
+  for (auto charge : {ChargeState::Unknown, ChargeState::Charging, ChargeState::NotCharging}) {
+    battery::Indicator reading{true, false, 95, charge};
+    const auto restored = battery::fromKey(battery::key(reading));
+    assert(restored.charge == charge && restored.percentage == 95);
+  }
   // Strict threshold, hysteresis, and invalid/disconnected sensor readings.
   auto healthy = evaluate(3.5f);
   assert(!healthy.low && !healthy.visible && battery::key(healthy) == 0);
@@ -147,11 +163,21 @@ int main(int argc, char** argv) {
   refresh::invalidate(state);
   assert(!refresh::matchesSource(state, changedUnderBadge));
   assert(refresh::overlayChanged(state, battery::key(low)));
+  refresh::remember(state, context, composite, "\"same-bird\"", base, battery::key(charging));
+  assert(!refresh::overlayChanged(state, battery::key(charging)));
+  assert(refresh::overlayChanged(state, battery::key(idle)));
+  auto chargingPixels = source;
+  auto idlePixels = source;
+  battery::draw(chargingPixels.data(), width, height, charging);
+  battery::draw(idlePixels.data(), width, height, idle);
+  assert(chargingPixels != idlePixels);
 
   // Optional visual QA output, created entirely by the firmware drawing code.
   if (argc == 2) {
     std::vector<uint8_t> preview(width * height / 2, 0x11);
-    battery::draw(preview.data(), width, height, {true, true, 20});
+    battery::draw(preview.data(), width, height / 3, charging);
+    battery::draw(preview.data(), width, height * 2 / 3, idle);
+    battery::draw(preview.data(), width, height, {true, true, 20, ChargeState::Unknown});
     std::ofstream output(argv[1], std::ios::binary);
     output.write(reinterpret_cast<const char*>(preview.data()), preview.size());
     assert(output.good());

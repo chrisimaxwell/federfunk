@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f6f5ef">
+    <title>Heard today · FederFunk</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to the picture</a>
+    <div class="page-shell">
+      <header class="masthead">
+        <a class="wordmark" href="/" aria-label="FederFunk home">FederFunk<span class="wordmark-dot" aria-hidden="true">·</span></a>
+        <span class="masthead-note">A little record of the wild</span>
+        <span id="demo-badge" class="tag" hidden>Sample collection</span>
+      </header>
+
+      <main id="main">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Your daily field notes</p>
+            <h1>Heard today<span class="title-dot">.</span></h1>
+          </div>
+          <div class="date-block">
+            <p id="collection-date">Loading your collection…</p>
+            <p id="updated-at" class="small muted"></p>
+          </div>
+        </div>
+
+        <div id="service-message" class="notice" role="status" hidden>
+          <p id="service-message-text"></p>
+          <button id="retry-button" type="button" class="text-button">Try again</button>
+        </div>
+
+        <div class="workspace">
+          <section class="picture-section" aria-label="The daily picture">
+            <div class="picture-toolbar">
+              <span class="eyebrow">The daily plate</span>
+              <div class="segmented" role="group" aria-label="Preview colors">
+                <button type="button" id="art-mode" aria-pressed="true">Artwork</button>
+                <button type="button" id="paper-mode" aria-pressed="false">E-paper colors</button>
+              </div>
+            </div>
+            <div id="picture-mat" class="picture-mat">
+              <div id="picture-paper" class="picture-paper">
+                <img id="picture" alt="Today's birds, arranged as a natural history illustration" hidden>
+                <div id="picture-placeholder" class="picture-placeholder" role="status">
+                  <span class="loading-mark" aria-hidden="true"></span>
+                  <p id="picture-placeholder-text">Gathering the day’s birds…</p>
+                </div>
+              </div>
+            </div>
+            <div class="picture-caption">
+              <p id="picture-caption">Birds drawn from the day’s detections.</p>
+              <a id="download-image" href="/art.png" download="heard-today.png">Save image <span aria-hidden="true">↓</span></a>
+            </div>
+            <p id="preview-note" class="small muted">The composition sent to your frame. Screen colors and the physical e-paper display will differ.</p>
+            <div id="frame-schedule-status" class="frame-schedule-status" role="status" hidden>
+              <span class="schedule-dot" aria-hidden="true"></span>
+              <div><p id="frame-schedule-label"></p><p id="frame-schedule-detail" class="field-help"></p></div>
+            </div>
+          </section>
+
+          <aside class="sidebar" aria-label="Collection details and picture settings">
+            <section class="today-section" aria-labelledby="today-heading">
+              <div class="section-heading">
+                <h2 id="today-heading">A day in birds</h2>
+                <span class="tiny-label" id="collection-kind">Today's collection</span>
+              </div>
+              <div class="totals" aria-live="polite">
+                <div><strong id="species-total">—</strong><span>species heard</span></div>
+                <div><strong id="detection-total">—</strong><span>detections</span></div>
+              </div>
+              <p class="small muted">Detection counts are recordings identified as a species, not individual birds.</p>
+              <p id="confidence-note" class="small muted" hidden></p>
+              <div id="hourly-section" class="hourly-section" hidden>
+                <div class="mini-heading"><span class="tiny-label">Across the day</span><span class="tiny-label muted">Detections / hour</span></div>
+                <div id="hourly-chart" class="hourly-chart" role="img" aria-label="Hourly detections"></div>
+                <div class="hour-labels" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+              </div>
+              <details id="species-details" class="collection-details">
+                <summary>Species heard <span id="species-list-count" class="tiny-label"></span></summary>
+                <div id="species-list" class="species-list" aria-label="Species detected"></div>
+              </details>
+              <p id="species-empty" class="empty-note" hidden>No birds recorded in this collection yet. The picture will grow as detections arrive.</p>
+            </section>
+
+            <section class="settings-section" aria-labelledby="settings-heading">
+              <div class="section-heading"><h2 id="settings-heading">Make it yours</h2><span class="tiny-label">On the picture</span></div>
+              <form id="settings-form">
+                <fieldset id="settings-fields" disabled>
+                  <legend class="sr-only">Picture settings</legend>
+                  <div class="toggle-list">
+                    <label class="toggle-row" for="show_names"><span>Bird names</span><input type="checkbox" id="show_names" name="show_names" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                    <label class="toggle-row" for="show_scientific"><span>Scientific names</span><input type="checkbox" id="show_scientific" name="show_scientific" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                    <label class="toggle-row" for="show_counts"><span>Detection counts</span><input type="checkbox" id="show_counts" name="show_counts" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                    <label class="toggle-row" for="show_title"><span>“Heard today” title</span><input type="checkbox" id="show_title" name="show_title" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                    <label class="toggle-row" for="show_qr"><span>Small QR link to this page</span><input type="checkbox" id="show_qr" name="show_qr" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                  </div>
+
+                  <div id="qr-settings" class="field" hidden>
+                    <label for="dashboard_url">Dashboard address</label>
+                    <input type="url" id="dashboard_url" name="dashboard_url" placeholder="http://your-server:8000" autocomplete="url" aria-describedby="qr-help">
+                    <p class="field-help" id="qr-help">Use an address your phone can reach on the same network.</p>
+                  </div>
+
+                  <div class="field">
+                    <label for="scale">Size birds by</label>
+                    <select id="scale" name="scale" aria-describedby="scale-help">
+                      <option value="log">Frequency · gentle (logarithmic)</option>
+                      <option value="linear">Frequency · proportional</option>
+                      <option value="equal">Equal size</option>
+                    </select>
+                    <p id="scale-help" class="field-help">More frequently heard birds get more space; a gentle scale keeps quieter visitors visible.</p>
+                  </div>
+
+                  <label class="toggle-row" for="show_all"><span>All birds heard today</span><input type="checkbox" id="show_all" name="show_all" role="switch" checked><span class="switch" aria-hidden="true"></span></label>
+                  <div class="field range-field" id="bird-limit-field" hidden>
+                    <label for="max_birds">Limit to the most-heard birds <output id="max-birds-value" for="max_birds">8</output></label>
+                    <input type="range" id="max_birds" name="max_birds" min="1" max="12" step="1" value="8">
+                    <div class="range-labels" aria-hidden="true"><span>A few favorites</span><span>A fuller gathering</span></div>
+                  </div>
+
+                  <div class="field">
+                    <label for="orientation">Orientation</label>
+                    <select id="orientation" name="orientation"><option value="portrait">Portrait · 1200 × 1600</option><option value="landscape">Landscape · 1600 × 1200</option></select>
+                  </div>
+
+                  <details id="variant-section" class="artwork-details" hidden>
+                    <summary>Choose the illustrations</summary>
+                    <p class="field-help">Choose a drawing for each species with more than one illustration.</p>
+                    <div id="variant-fields"></div>
+                  </details>
+
+                  <section class="schedule-section" aria-labelledby="schedule-heading">
+                    <div class="section-heading"><h2 id="schedule-heading">Follow the daylight</h2><span class="tiny-label">When to update</span></div>
+                    <label class="toggle-row" for="schedule_enabled"><span>Let the frame rest overnight</span><input type="checkbox" id="schedule_enabled" name="schedule_enabled" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                    <p class="field-help">Outside the update window, the frame holds its last picture.</p>
+                    <p id="sun-times" class="sun-times" hidden></p>
+                    <fieldset id="schedule-controls">
+                      <legend class="sr-only">Update window</legend>
+                      <div class="schedule-boundary">
+                        <div class="field">
+                          <label for="schedule_start_mode">Start updating</label>
+                          <select id="schedule_start_mode" name="schedule_start_mode"><option value="sunrise">At sunrise</option><option value="sunset">At sunset</option><option value="fixed">At a set time</option></select>
+                        </div>
+                        <div id="schedule_start_offset_field" class="field">
+                          <label for="schedule_start_offset">Minutes before / after</label>
+                          <input type="number" id="schedule_start_offset" name="schedule_start_offset" min="-180" max="180" step="1" value="0" required aria-describedby="schedule-offset-help">
+                        </div>
+                        <div id="schedule_start_time_field" class="field" hidden>
+                          <label for="schedule_start_time">Local time</label>
+                          <input type="time" id="schedule_start_time" name="schedule_start_time" value="07:00" required>
+                        </div>
+                      </div>
+                      <div class="schedule-boundary">
+                        <div class="field">
+                          <label for="schedule_end_mode">Hold the last picture</label>
+                          <select id="schedule_end_mode" name="schedule_end_mode"><option value="sunrise">At sunrise</option><option value="sunset">At sunset</option><option value="fixed">At a set time</option></select>
+                        </div>
+                        <div id="schedule_end_offset_field" class="field">
+                          <label for="schedule_end_offset">Minutes before / after</label>
+                          <input type="number" id="schedule_end_offset" name="schedule_end_offset" min="-180" max="180" step="1" value="60" required aria-describedby="schedule-offset-help">
+                        </div>
+                        <div id="schedule_end_time_field" class="field" hidden>
+                          <label for="schedule_end_time">Local time</label>
+                          <input type="time" id="schedule_end_time" name="schedule_end_time" value="20:00" required>
+                        </div>
+                      </div>
+                      <p id="schedule-offset-help" class="field-help">Use a negative number for earlier, or a positive number for later. +60 means one hour after.</p>
+                      <details class="location-details">
+                        <summary>Sun location &amp; time zone</summary>
+                        <p id="schedule-location-note" class="field-help">Approximate location for ZIP 84105, Salt Lake City. Sun times adjust with the seasons.</p>
+                        <div class="schedule-boundary">
+                          <div class="field"><label for="schedule_latitude">Latitude</label><input type="number" id="schedule_latitude" name="schedule_latitude" min="-90" max="90" step="any" value="40.7372" required></div>
+                          <div class="field"><label for="schedule_longitude">Longitude</label><input type="number" id="schedule_longitude" name="schedule_longitude" min="-180" max="180" step="any" value="-111.8581" required></div>
+                        </div>
+                        <div class="field"><label for="schedule_timezone">Time zone</label><input type="text" id="schedule_timezone" name="schedule_timezone" value="America/Denver" required spellcheck="false" autocomplete="off" aria-describedby="timezone-help"><p id="timezone-help" class="field-help">An IANA time zone, such as America/Denver. Daylight saving changes are handled automatically.</p></div>
+                      </details>
+                    </fieldset>
+                  </section>
+                </fieldset>
+
+                <div class="apply-area">
+                  <button id="apply-button" class="primary-button" type="submit" disabled>Apply to picture <span aria-hidden="true">↗</span></button>
+                  <p id="save-status" class="save-status" aria-live="polite">Loading picture settings…</p>
+                  <p class="field-help">Your frame receives changes on its next scheduled wake, usually within 30 minutes during the update window. Overnight, it holds the last picture.</p>
+                </div>
+              </form>
+            </section>
+          </aside>
+        </div>
+
+        <section class="sources-section" aria-label="Illustration library coverage">
+          <details id="library-details">
+            <summary>Illustration library <span class="muted">Your complete species history</span></summary>
+            <p id="library-summary" class="small muted">Open to compare the artwork with all reported BirdNET species.</p>
+            <p class="small muted">BirdNET labels are automated identifications, not confirmed sightings. Missing art is never replaced with a different species.</p>
+            <label for="library-search" class="small">Find a species</label>
+            <input id="library-search" type="search" placeholder="Common or scientific name">
+            <div id="library-list" class="library-list"></div>
+          </details>
+        </section>
+
+        <section id="sources-section" class="sources-section" aria-labelledby="sources-heading" hidden>
+          <details>
+            <summary id="sources-heading">From the naturalist’s library <span class="muted">Illustration credits &amp; sources</span></summary>
+            <p class="small muted">Historical illustrations, collected with their original sources. Credits apply to the drawings in this collection.</p>
+            <ul id="artwork-credits"></ul>
+          </details>
+        </section>
+      </main>
+
+      <footer class="footer"><span>FederFunk · A quieter kind of screen</span><span>Made from the sounds around you.</span></footer>
+    </div>
+  </body>
+</html>

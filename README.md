@@ -2,6 +2,17 @@
 
 *Your backyard, on the air.*
 
+## Naturalist edition
+
+Based on [Thomas Schmid’s FederFunk](https://github.com/tschmid/federfunk), this fork adds a [naturalist print and dashboard](naturalist/README.md):
+historical bird illustrations, portrait compositions sized by detection
+frequency, optional names/counts/QR links, and persistent web controls backed
+by BirdNET-Go. The companion keeps the existing large-display image endpoint.
+
+It also adds [unused-audio shutdown](docs/sleep-power.md) for the integrated
+13.3-inch board. Both firmware builds and host tests pass; the reduction from
+the reported 11 mA sleep baseline still requires a physical current measurement.
+
 Bring your backyard birds to life on color e-paper. FederFunk combines
 German *Feder* (feather) and *Funk* (radio): a little wireless window into
 the birds outside.
@@ -15,7 +26,7 @@ the displayed pixels change, and then deep-sleeps for the configured interval
 
 Give your coding agent this repository's URL and this prompt:
 
-> Set up FederFunk from https://github.com/tschmid/federfunk on the ESP32
+> Set up FederFunk from https://github.com/chrisimaxwell/federfunk on the ESP32
 > connected to my computer.
 > Read README.md and AGENTS.md first. Identify my board and display, install
 > the build tools, keep my Wi-Fi credentials private, configure an image URL,
@@ -41,7 +52,7 @@ able to reach each other on the network.
 Clone this repository and bootstrap from the checkout:
 
 ```sh
-git clone https://github.com/tschmid/federfunk.git
+git clone https://github.com/chrisimaxwell/federfunk.git
 cd federfunk
 python3 scripts/bootstrap.py
 ```
@@ -128,6 +139,13 @@ three times if any step fails. Its pin, brightness, blink count, and timing
 are configurable in `BirdDisplayConfig.h`.
 
 ## Large display wiring
+
+Keep the BS switches in the setting proven to work on the actual assembly.
+On the locally tested board, the owner restored the factory positions
+(originally described as both OFF), corrected reversed ribbon contacts, and
+successfully displayed the six-color test pattern. Earlier local instructions
+to move both switches ON were not validated and are superseded by this result.
+Change switches or ribbon connections only with all power disconnected.
 
 The ESP32-S3-ePaper-13.3E6 already connects its ESP32 to the screen internally;
 no breakout-board jumper wires are needed. The pin map in
@@ -254,18 +272,28 @@ Edit the non-secret settings in `src/BatteryConfig.h`, then rebuild/upload:
 
 ```cpp
 constexpr bool enabled = true;
-constexpr bool showOnlyWhenLow = true;
+constexpr bool showOnlyWhenLow = false;
 constexpr float lowVoltage = 3.5f;
 constexpr float recoveryHysteresis = 0.1f;
 ```
 
-With these defaults, a red battery symbol, exclamation mark, and estimated
-percentage appear at the bottom left below **3.5 V**. The warning stays until
+The local setup always shows the battery percentage and charging status.
+A red battery symbol and exclamation mark appear below **3.5 V**. The warning stays until
 the voltage reaches **3.6 V** to avoid toggling around the threshold. Set
-`showOnlyWhenLow = false` to always show the battery/percentage bar (green
-when healthy, red when low), or `enabled = false` to leave the image untouched.
-The badge covers only a 192×56-pixel rectangle, 16 pixels from the left and
+`showOnlyWhenLow = true` to hide the badge at normal voltage, or
+`enabled = false` to leave the image untouched.
+The badge covers only a 384×56-pixel rectangle, 16 pixels from the left and
 bottom edges; reserve that corner in your backend layout if needed.
+
+Charging status is read from the ETA6098 STAT signal on GPIO38, using 32
+samples before Wi-Fi/display power. Stable LOW means `CHARGING`, stable HIGH
+means `NOT CHARGING`, and an unstable/invalid reading means `UNKNOWN`.
+`NOT CHARGING` does not prove the battery is full; there is no independent
+USB-power reading. The owner confirmed a connected battery, recorded in
+`batteryConfig::batteryInstalled`; set it false if the battery is removed
+because STAT can also assert without a battery. This code reads the status
+only and does not change charger settings. The displayed status is sampled
+at each wake, not continuously during the 30-minute sleep interval.
 
 Battery is sampled once each wake, before Wi-Fi and panel power are enabled,
 using 32 samples with outliers removed. A voltage change alone does not
@@ -313,8 +341,13 @@ Expected output includes the assigned IP, HTTP byte count, JPEG size, and
 e-paper refresh progress. A refresh is slow by design (about 25 seconds). Once
 the status indication finishes, Wi-Fi is shut down, the panel is already in
 its own sleep mode, and the ESP32 enters timer deep sleep. The large profile
-also switches off display power and holds its power-enable GPIO low during
-deep sleep, including after download or display failures.
+also switches off display power and holds its power-enable and display
+interface GPIOs low during deep sleep, including after download or display
+failures. Orderly shutdown sends POWER_OFF, waits for 250 ms of continuous
+BUSY idle, sends sleep, then lowers the interface signals for 60 ms before
+cutting power. A stuck-BUSY failure instead resets the interface and removes
+power without issuing further display commands. That fallback is bounded
+recovery, not temperature/current protection or a validated hardware repair.
 
 Deep sleep minimizes the ESP32 chip's consumption, but the complete breakout
 board may still draw additional current through its regulator, USB-to-serial
@@ -394,6 +427,7 @@ after each attempt, so refresh and download time are added to it.
 | HTTP request fails | Check the server's LAN address, port, firewall, and endpoint from the same network. Only `http://` is currently supported. |
 | JPEG is rejected or looks poor | Use a baseline JPEG, ideally the exact canvas size. A backend-dithered `.bin` avoids JPEG artifacts and firmware quantization entirely. |
 | BUSY timeout or no screen change | Check display identity, correct profile, power, and—on the small HAT—wiring. Cut power before changing GPIO or ribbon connections. |
+| Large panel reports `BUSY never went LOW` | The refresh was not acknowledged. With power disconnected, check ribbon contact orientation, seating and latches. Preserve the switch positions proven to work on the assembly; see Large display wiring. |
 
 On the small HAT revision used during development, the display FPC needed
 contacts **down** in the connector; a reversed cable caused excess current.

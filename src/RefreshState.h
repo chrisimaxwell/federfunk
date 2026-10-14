@@ -9,7 +9,7 @@ namespace refresh {
 
 constexpr size_t digestBytes = 32;
 constexpr size_t etagCapacity = 256;
-constexpr uint32_t stateVersion = 0x46465202;  // "FFR", version 2 (local overlay).
+constexpr uint32_t stateVersion = 0x46465203;  // "FFR", version 3 (charge status).
 using Digest = std::array<uint8_t, digestBytes>;
 
 // Plain data with no constructor: safe to retain in RTC memory across sleep.
@@ -56,9 +56,15 @@ inline const char* requestETag(const State& state) {
   return state.version == stateVersion ? state.etag : "";
 }
 
-enum class Response { Failed, Downloaded, NotModified };
+enum class Response { Failed, Downloaded, NotModified, Deferred };
 
-inline Response classifyResponse(int httpStatus, bool sentETag) {
+inline Response classifyResponse(int httpStatus, bool sentETag,
+                                 uint32_t holdSeconds = 0) {
+  // A schedule hold requests no display work, not proof that a frame is on
+  // the panel. It is valid on a cold wake as well as a conditional request.
+  if ((httpStatus == 200 || httpStatus == 304) && holdSeconds > 0) {
+    return Response::Deferred;
+  }
   if (httpStatus == 200) return Response::Downloaded;
   // An unsolicited 304 does not prove anything is already on this screen.
   if (httpStatus == 304 && sentETag) return Response::NotModified;

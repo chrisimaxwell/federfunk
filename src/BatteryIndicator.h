@@ -7,22 +7,49 @@
 
 namespace battery {
 
+enum class ChargeState : uint8_t { Unknown, Charging, NotCharging };
+
+inline const char* chargeLabel(ChargeState state) {
+  switch (state) {
+    case ChargeState::Charging: return "CHARGING";
+    case ChargeState::NotCharging: return "NOT CHARGING";
+    default: return "UNKNOWN";
+  }
+}
+
+// STAT HIGH is not proof of a full battery: it can also be idle/unpowered.
+// Reject unstable samples and require the installation's confirmed cell.
+inline ChargeState classifyCharge(unsigned lowSamples, unsigned count,
+                                 bool installed, bool voltageValid) {
+  if (!installed || !voltageValid || count < 16 || lowSamples > count)
+    return ChargeState::Unknown;
+  if (lowSamples == count) return ChargeState::Charging;
+  if (lowSamples == 0) return ChargeState::NotCharging;
+  return ChargeState::Unknown;
+}
+
 struct Indicator {
   bool visible;
   bool low;
   uint8_t percentage;
+  ChargeState charge;
+  constexpr Indicator(bool shown = false, bool warning = false, uint8_t percent = 0,
+                      ChargeState state = ChargeState::Unknown)
+      : visible(shown), low(warning), percentage(percent), charge(state) {}
 };
 
 inline uint16_t key(const Indicator& indicator) {
   return indicator.visible
              ? static_cast<uint16_t>(0x100 | (indicator.low ? 0x200 : 0) |
-                                     indicator.percentage)
+                                     indicator.percentage |
+                                     (static_cast<uint16_t>(indicator.charge) << 10))
              : 0;
 }
 
 inline Indicator fromKey(uint16_t value) {
   return {(value & 0x100) != 0, (value & 0x200) != 0,
-          static_cast<uint8_t>(value & 0x7F)};
+          static_cast<uint8_t>(value & 0x7F),
+          static_cast<ChargeState>((value >> 10) & 3)};
 }
 
 inline bool validVoltage(float volts) {
@@ -74,7 +101,7 @@ inline Indicator evaluate(float volts, const Indicator& previous,
 
 // A deliberately small, opaque badge. Never change any pixels outside it.
 constexpr int badgeMargin = 16;
-constexpr int badgeWidth = 192;
+constexpr int badgeWidth = 384;
 constexpr int badgeHeight = 56;
 
 inline void pixel(uint8_t* frame, int width, int height, int x, int y,
@@ -123,6 +150,26 @@ inline void glyph(uint8_t* frame, int width, int height, int x, int y, char c) {
   }
 }
 
+inline void chargeGlyph(uint8_t* frame, int width, int height, int x, int y, char c) {
+  // Original 5x7 uppercase glyphs used by the three charge-state labels.
+  static constexpr char letters[] = "ACGHIKNORTUW";
+  static constexpr uint8_t rows[][7] = {
+      {14,17,17,31,17,17,17}, {14,17,16,16,16,17,14},
+      {14,17,16,23,17,17,14}, {17,17,17,31,17,17,17},
+      {31,4,4,4,4,4,31}, {17,18,20,24,20,18,17},
+      {17,25,25,21,19,19,17}, {14,17,17,17,17,17,14},
+      {30,17,17,30,20,18,17}, {31,4,4,4,4,4,4},
+      {17,17,17,17,17,17,14}, {17,17,17,21,21,21,10}};
+  for (size_t index = 0; letters[index]; ++index) {
+    if (letters[index] != c) continue;
+    for (int row = 0; row < 7; ++row)
+      for (int col = 0; col < 5; ++col)
+        if (rows[index][row] & (1 << (4 - col)))
+          rectangle(frame, width, height, x + col * 2, y + row * 2, 2, 2, 0);
+    break;
+  }
+}
+
 inline void draw(uint8_t* frame, int width, int height, const Indicator& indicator) {
   if (!indicator.visible || frame == nullptr) return;
   const int x = badgeMargin;
@@ -148,6 +195,10 @@ inline void draw(uint8_t* frame, int width, int height, const Indicator& indicat
   for (size_t i = 0; text[i] != '\0'; ++i) {
     glyph(frame, width, height, x + 92 + static_cast<int>(i) * 18, y + 18, text[i]);
   }
+  const char* charge = chargeLabel(indicator.charge);
+  for (size_t i = 0; charge[i]; ++i)
+    chargeGlyph(frame, width, height, x + 210 + static_cast<int>(i) * 12,
+                y + 21, charge[i]);
 }
 
 }  // namespace battery

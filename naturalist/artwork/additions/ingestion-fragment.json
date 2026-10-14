@@ -1,0 +1,82 @@
+[
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File%3AIllustrations_of_the_birds_of_California%2C_Texas%2C_Oregon%2C_British_and_Russian_America_%28Plate_30%29_%286306537648%29.jpg",
+    "image_url": "https://bhl-open-data.s3.us-east-2.amazonaws.com/web/illustrationsofb00cass/illustrationsofb00cass_0246_full.webp",
+    "source_file": "sources/canyon-wren-cassin.webp",
+    "id": "canyon-wren-cassin",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File%3AIllustrations_of_the_birds_of_California%2C_Texas%2C_Oregon%2C_British_and_Russian_America_%28Plate_30%29_%286306537648%29.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "archive_url": "https://www.biodiversitylibrary.org/page/27214293",
+    "source_rights_notes": "Commons explicitly marks the scan public domain (PD-scan). Retained source downloaded directly from BHL.",
+    "species_identification": "Plate 30 caption Troglodytes mexicanus (historical name for Catherpes mexicanus); warm rufous belly, long decurved bill and white throat match the Canyon Wren."
+  },
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File%3ASweet_Voice_the_Vesper_Sparrow%2C_Little_Friend_the_Song_Sparrow.jpg",
+    "image_url": "https://bhl-open-data.s3.us-east-2.amazonaws.com/web/burgessbirdbookf00burgiala/burgessbirdbookf00burgiala_0043_full.webp",
+    "source_file": "sources/song-sparrow.webp",
+    "id": "song-sparrow",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File%3ASweet_Voice_the_Vesper_Sparrow%2C_Little_Friend_the_Song_Sparrow.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "archive_url": "https://www.biodiversitylibrary.org/page/18024721",
+    "species_identification": "Lower bird explicitly captioned Little Friend the Song Sparrow. Upper Vesper Sparrow is excluded."
+  },
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File%3AHandbook_of_birds_of_the_western_United_States_BHL7576540.jpg",
+    "image_url": "https://bhl-open-data.s3.us-east-2.amazonaws.com/web/handbookofbird00bail/handbookofbird00bail_0625_full.webp",
+    "source_file": "sources/mountain-chickadee.webp",
+    "id": "mountain-chickadee",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File%3AHandbook_of_birds_of_the_western_United_States_BHL7576540.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "archive_url": "https://www.biodiversitylibrary.org/page/7576540",
+    "species_identification": "Plate explicitly captioned Mountain Chickadee; distinctive white eyebrow present. Upper bird extracted.",
+    "edition_metadata_url": "https://archive.org/metadata/handbookofbird00bail"
+  },
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File%3AThe_second_book_of_birds_%28Pl._13%29_%286959762268%29.jpg",
+    "image_url": "https://bhl-open-data.s3.us-east-2.amazonaws.com/web/secondbookofbird00mill/secondbookofbird00mill_0169_full.webp",
+    "source_file": "sources/black-billed-magpie.webp",
+    "id": "black-billed-magpie",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File%3AThe_second_book_of_birds_%28Pl._13%29_%286959762268%29.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "archive_url": "https://www.biodiversitylibrary.org/page/13651434",
+    "source_rights_notes": "Commons records both a public-domain scan declaration and an alternate CC BY 2.0 scan license. The retained source was downloaded directly from BHL; creator and library attribution are preserved.",
+    "species_identification": "Plate caption American Magpie; exact Commons taxonomy Pica hudsonia. Black bill excludes Yellow-billed Magpie."
+  },
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File%3A61_Great_Horned_Owl.jpg",
+    "image_url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/8/80/61_Great_Horned_Owl.jpg/1920px-61_Great_Horned_Owl.jpg",
+    "source_file": "sources/great-horned-owl-audubon.jpg",
+    "original_image_url": "https://upload.wikimedia.org/wikipedia/commons/8/80/61_Great_Horned_Owl.jpg",
+    "original_sha256": "b8564eefd7edd299569a1eb281d9dcd942ba31a838e48e442d6dcdf8ed2ac420",
+    "original_width": 11184,
+    "original_height": 16128,
+    "source_rendition": "Official Wikimedia 1920-pixel-wide rendition, retained byte-for-byte",
+    "id": "great-horned-owl-audubon",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File%3A61_Great_Horned_Owl.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "species_identification": "Audubon Birds of America plate 61 explicitly Great Horned Owl (Bubo virginianus). Front bird extracted.",
+    "archive_url": "https://images.library.pitt.edu/a/audubon/"
+  },
+  {
+    "source_url": "https://commons.wikimedia.org/wiki/File:Ardea_herodias_1891.jpg",
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/9/98/Ardea_herodias_1891.jpg",
+    "source_file": "sources/great-blue-heron-1891.jpg",
+    "archive_url": "https://www.biodiversitylibrary.org/bibliography/14085",
+    "id": "great-blue-heron-1891",
+    "retrieved": "2026-10-14",
+    "rights": "Public domain",
+    "rights_url": "https://commons.wikimedia.org/wiki/File:Ardea_herodias_1891.jpg#Licensing",
+    "public_domain_basis": "Historical work published before 1931; the exact Commons source record marks the reproduction public domain. Rights verified 2026-10-14.",
+    "species_identification": "Source caption Great Blue Heron; exact record identifies Ardea herodias."
+  }
+]

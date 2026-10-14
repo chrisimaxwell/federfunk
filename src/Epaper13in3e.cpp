@@ -14,20 +14,17 @@ Epaper13in3e::Epaper13in3e(SPIClass& spi, int sck, int mosi, int csMaster,
       csSlave_(csSlave), dc_(dc), rst_(rst), busy_(busy), power_(power) {}
 
 void Epaper13in3e::begin() {
-  // Release the power-enable hold from the previous timer deep sleep.
+  if (powered_) powerOff();
+  // Configure the retained LOW levels before releasing deep-sleep holds.
+  // The interface must not feed a display whose supply is switched off.
+  const int outputs[] = {power_, rst_, csMaster_, csSlave_, dc_, sck_, mosi_};
+  for (int pin : outputs) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  }
   gpio_deep_sleep_hold_dis();
-  gpio_hold_dis(static_cast<gpio_num_t>(power_));
-  pinMode(power_, OUTPUT);
-  digitalWrite(power_, LOW);
-  pinMode(csMaster_, OUTPUT);
-  pinMode(csSlave_, OUTPUT);
-  pinMode(dc_, OUTPUT);
-  pinMode(rst_, OUTPUT);
   pinMode(busy_, INPUT);
-  deselect();
-  digitalWrite(dc_, LOW);
-  digitalWrite(rst_, LOW);
-  spi_.begin(sck_, -1, mosi_, -1);
 }
 
 void Epaper13in3e::reset() {
@@ -67,11 +64,11 @@ void Epaper13in3e::command(Target target, uint8_t value,
   spi_.endTransaction();
 }
 
-bool Epaper13in3e::waitUntilIdle(uint32_t timeoutMs) {
+bool Epaper13in3e::waitUntilIdle(uint32_t timeoutMs, const char* timeoutMessage) {
   const uint32_t startedAt = millis();
   while (digitalRead(busy_) == LOW) {
     if (millis() - startedAt >= timeoutMs) {
-      Serial.println("13.3-inch e-paper BUSY timeout.");
+      Serial.println(timeoutMessage);
       return false;
     }
     delay(10);
@@ -81,11 +78,16 @@ bool Epaper13in3e::waitUntilIdle(uint32_t timeoutMs) {
 }
 
 bool Epaper13in3e::initialize() {
+  Serial.println("Display rail: enabling GPIO1.");
   digitalWrite(power_, HIGH);
   powered_ = true;
+  initialized_ = false;
   delay(10);
+  deselect();
+  spi_.begin(sck_, -1, mosi_, -1);
+  spiStarted_ = true;
   reset();
-  if (!waitUntilIdle(10000)) return false;
+  if (!waitUntilIdle(10000, "Display reset: BUSY stayed LOW.")) return false;
 
   const uint8_t analog[] = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC,
                             0x15, 0x15, 0x55};
@@ -118,6 +120,7 @@ bool Epaper13in3e::initialize() {
   command(Target::Master, 0xB0, enable, sizeof(enable));
   const uint8_t tftPower[] = {0x02};
   command(Target::Master, 0xB1, tftPower, sizeof(tftPower));
+  initialized_ = true;
   return true;
 }
 
@@ -139,33 +142,108 @@ void Epaper13in3e::sendFrame(const uint8_t* frame, Target target) {
 }
 
 bool Epaper13in3e::refresh() {
+  Serial.println("PON 0x04: requesting display booster power.");
   command(Target::Both, 0x04);
-  if (!waitUntilIdle(30000)) return false;
+  if (!waitUntilIdle(30000, "PON: BUSY stayed LOW.")) return false;
+  Serial.println("PON: observed BUSY HIGH.");
   delay(50);
   const uint8_t zero[] = {0x00};
+  Serial.println("DRF 0x12: requesting refresh.");
   command(Target::Both, 0x12, zero, sizeof(zero));
-  if (!waitUntilIdle(120000)) return false;
+  // An idle/disconnected BUSY line is not evidence of a completed refresh.
+  // Observe the controller enter BUSY first, including a delayed assertion.
+  const uint32_t refreshCommandAt = millis();
+  while (digitalRead(busy_) == HIGH) {
+    if (millis() - refreshCommandAt >= 1000) {
+      Serial.println("13.3-inch e-paper refresh did not start: BUSY never went LOW.");
+      return false;
+    }
+    delay(10);
+  }
+  Serial.println("13.3-inch e-paper refresh started (BUSY LOW).");
+  if (!waitUntilIdle(120000,
+      "13.3-inch e-paper refresh completion timed out: BUSY stayed LOW.")) {
+    return false;
+  }
   delay(50);
-  command(Target::Both, 0x02, zero, sizeof(zero));
-  return waitUntilIdle(30000);
+  return true;
 }
 
-void Epaper13in3e::powerOff() {
-  if (powered_) {
-    const uint8_t key[] = {0xA5};
-    command(Target::Both, 0x07, key, sizeof(key));
-    delay(100);
+bool Epaper13in3e::waitForPowerOffIdle() {
+  // Manual p.15 requires >200 ms after POF BUSY returns HIGH. Restart the
+  // guard if BUSY goes LOW, including an assertion just after the command.
+  // Do not require sampling a LOW pulse: its minimum width is unspecified.
+  const uint32_t startedAt = millis();
+  uint32_t idleSince = startedAt;
+  bool wasIdle = false;
+  while (millis() - startedAt < 30000) {
+    const uint32_t now = millis();
+    if (digitalRead(busy_) == HIGH) {
+      if (!wasIdle) idleSince = now;
+      wasIdle = true;
+      if (now - idleSince >= 250) return true;
+    } else {
+      wasIdle = false;
+    }
+    delay(1);
   }
-  digitalWrite(power_, LOW);
+  Serial.println("POF: BUSY did not remain HIGH for the shutdown guard.");
+  return false;
+}
+
+void Epaper13in3e::interfaceLow() {
+  // Hold reset first so lowering CS and detaching the clock cannot be
+  // interpreted as another command. Release the SPI peripheral before GPIO.
   digitalWrite(rst_, LOW);
-  digitalWrite(dc_, LOW);
+  if (spiStarted_) {
+    spi_.end();
+    spiStarted_ = false;
+  }
+  const int outputs[] = {rst_, csMaster_, csSlave_, dc_, sck_, mosi_};
+  for (int pin : outputs) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
+}
+
+bool Epaper13in3e::powerOff() {
+  if (!powered_) return true;
+
+  bool orderly = false;
+  // Try the normal POF sequence on idle failures too (e.g. refresh never
+  // asserted BUSY). Never send sleep or further commands into stuck BUSY.
+  if (initialized_ && digitalRead(busy_) == HIGH) {
+    Serial.println("POF 0x02: requesting display booster power off.");
+    const uint8_t zero[] = {0x00};
+    command(Target::Both, 0x02, zero, sizeof(zero));
+    orderly = waitForPowerOffIdle();
+    if (orderly) {
+      Serial.println("Sleep 0x07: power-off idle guard completed.");
+      const uint8_t key[] = {0xA5};
+      command(Target::Both, 0x07, key, sizeof(key));
+      delay(100);
+    }
+  }
+  if (!orderly) {
+    // The vendor has no timeout recovery. This bounded fallback removes
+    // drive/power; it is not a validated emergency discharge or thermal trip.
+    Serial.println("Display abort: resetting and removing power without sleep.");
+  }
+  interfaceLow();
+  // Manual p.15 requires >50 ms with interface LOW before removing VDD.
+  delay(60);
+  Serial.println("Display rail: disabling GPIO1.");
+  digitalWrite(power_, LOW);
   powered_ = false;
+  initialized_ = false;
+  return orderly;
 }
 
 void Epaper13in3e::prepareForDeepSleep() {
   powerOff();
-  // Keep the board's display power switch off throughout ESP32 deep sleep.
-  gpio_hold_en(static_cast<gpio_num_t>(power_));
+  // Retain every connected output LOW, not just the switched supply enable.
+  const int outputs[] = {power_, rst_, csMaster_, csSlave_, dc_, sck_, mosi_};
+  for (int pin : outputs) gpio_hold_en(static_cast<gpio_num_t>(pin));
   gpio_deep_sleep_hold_en();
 }
 
@@ -180,8 +258,9 @@ bool Epaper13in3e::display(const uint8_t* frame) {
   sendFrame(frame, Target::Master);
   sendFrame(frame, Target::Slave);
   Serial.println("Refreshing 13.3-inch e-paper...");
-  const bool ok = refresh();
-  powerOff();
+  const bool refreshed = refresh();
+  const bool shutDown = powerOff();
+  const bool ok = refreshed && shutDown;
   Serial.println(ok ? "E-paper refresh complete." : "E-paper refresh failed.");
   return ok;
 }

@@ -4,7 +4,11 @@
 // The small breakout profile never samples an ADC or draws a battery overlay.
 namespace batteryConfig {
 constexpr bool enabled = true;
-constexpr bool showOnlyWhenLow = true;
+constexpr bool showOnlyWhenLow = false;
+// Owner confirmed a battery is attached. Set false if it is removed: the
+// charger STAT signal alone cannot distinguish charging from an absent cell.
+constexpr bool batteryInstalled = true;
+constexpr bool reportCharging = true;
 constexpr float lowVoltage = 3.5f;
 // A low warning clears only at lowVoltage + recoveryHysteresis volts.
 constexpr float recoveryHysteresis = 0.1f;

@@ -29,15 +29,21 @@ class Epaper13in3e {
   SPIClass& spi_;
   int sck_, mosi_, csMaster_, csSlave_, dc_, rst_, busy_, power_;
   bool powered_ = false;
+  bool initialized_ = false;
+  bool spiStarted_ = false;
 
   void reset();
   void select(Target target);
   void deselect();
   void command(Target target, uint8_t value, const uint8_t* data = nullptr,
                size_t length = 0);
-  bool waitUntilIdle(uint32_t timeoutMs);
+  bool waitUntilIdle(
+      uint32_t timeoutMs,
+      const char* timeoutMessage = "13.3-inch e-paper BUSY timeout.");
   bool initialize();
   void sendFrame(const uint8_t* frame, Target target);
   bool refresh();
-  void powerOff();
+  bool waitForPowerOffIdle();
+  void interfaceLow();
+  bool powerOff();
 };

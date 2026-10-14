@@ -21,9 +21,11 @@
 #endif
 
 #include "DisplaySelection.h"
+#include "BoardPower.h"
 #include "BatteryConfig.h"
 #include "BatteryIndicator.h"
 #include "RefreshState.h"
+#include "ScheduleHold.h"
 
 namespace {
 
@@ -33,6 +35,8 @@ constexpr char temporaryImagePath[] = "/image.tmp";
 RTC_DATA_ATTR refresh::State lastDisplayed{};
 refresh::Digest refreshContext{};
 battery::Indicator batteryIndicator{};
+// Per-wake only. A future network failure retains the normal retry interval.
+uint32_t scheduleHoldSeconds = 0;
 
 auto& DebugSerial = Serial;
 SPIClass epdSpi(FSPI);
@@ -54,7 +58,7 @@ bool fingerprint(const uint8_t* data, size_t size, refresh::Digest& digest) {
 bool initializeRefreshState() {
   // Bind the remembered image/ETag to this URL, canvas, and rendering settings.
   // Hash the URL rather than retaining another copy of a private backend URL.
-  uint8_t contextBytes[refresh::digestBytes + 12 + sizeof(float) * 6];
+  uint8_t contextBytes[refresh::digestBytes + 14 + sizeof(float) * 6];
   refresh::Digest urlDigest;
   if (!fingerprint(reinterpret_cast<const uint8_t*>(displayConfig::imageUrl),
                    strlen(displayConfig::imageUrl), urlDigest)) {
@@ -74,12 +78,14 @@ bool initializeRefreshState() {
   contextBytes[refresh::digestBytes + 10] =
       batteryConfig::enabled && displayConfig::batterySensePin >= 0;
   contextBytes[refresh::digestBytes + 11] = batteryConfig::showOnlyWhenLow;
+  contextBytes[refresh::digestBytes + 12] = batteryConfig::batteryInstalled;
+  contextBytes[refresh::digestBytes + 13] = batteryConfig::reportCharging;
   const float batterySettings[] = {
       batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
       batteryConfig::emptyVoltage, batteryConfig::fullVoltage,
       batteryConfig::voltageCalibration,
       static_cast<float>(batteryConfig::percentageStep)};
-  memcpy(contextBytes + refresh::digestBytes + 12, batterySettings,
+  memcpy(contextBytes + refresh::digestBytes + 14, batterySettings,
          sizeof(batterySettings));
   if (!fingerprint(contextBytes, sizeof(contextBytes), refreshContext)) {
     refresh::invalidate(lastDisplayed);
@@ -95,6 +101,10 @@ bool initializeRefreshState() {
 
 void sampleBattery() {
   if (!batteryConfig::enabled || displayConfig::batterySensePin < 0) return;
+  if (!batteryConfig::batteryInstalled) {
+    DebugSerial.println("Battery not installed/configured; battery readout disabled.");
+    return;
+  }
   const auto previous = lastDisplayed.version == refresh::stateVersion
                             ? battery::fromKey(lastDisplayed.overlayKey)
                             : battery::Indicator{};
@@ -112,6 +122,7 @@ void sampleBattery() {
       },
       displayConfig::batteryVoltageDivider, batteryConfig::voltageCalibration);
   if (!battery::validVoltage(volts)) {
+    batteryIndicator.charge = battery::ChargeState::Unknown;
     DebugSerial.printf("Battery reading invalid (%.2f V); retaining the previous indicator.\n",
                        volts);
     return;
@@ -120,8 +131,28 @@ void sampleBattery() {
       volts, previous, batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
       batteryConfig::showOnlyWhenLow, batteryConfig::emptyVoltage,
       batteryConfig::fullVoltage, batteryConfig::percentageStep);
-  DebugSerial.printf("Battery: %.2f V, estimated %u%%; low warning %s (threshold %.2f V).\n",
+  if (batteryConfig::reportCharging && displayConfig::chargeStatusPin >= 0) {
+    // Input only: never alter the charger or power rails. ETA6098 STAT is
+    // open-drain; the pull-up makes its inactive state readable.
+    pinMode(displayConfig::chargeStatusPin, INPUT_PULLUP);
+    delay(5);
+    unsigned lowSamples = 0;
+    constexpr unsigned count = 32;
+    for (unsigned i = 0; i < count; ++i) {
+      lowSamples += digitalRead(displayConfig::chargeStatusPin) == LOW;
+      delay(2);
+    }
+    batteryIndicator.charge = battery::classifyCharge(
+        lowSamples, count, batteryConfig::batteryInstalled, true);
+    // Remove the internal pull-up before sleep to avoid a continuous load
+    // through STAT when it is LOW. The next wake configures it again.
+    pinMode(displayConfig::chargeStatusPin, INPUT);
+    DebugSerial.printf("Charger STAT: %u/%u LOW samples; %s.\n", lowSamples,
+                       count, battery::chargeLabel(batteryIndicator.charge));
+  }
+  DebugSerial.printf("Battery: %.2f V, estimated %u%%; %s; low warning %s (threshold %.2f V).\n",
                      volts, batteryIndicator.percentage,
+                     battery::chargeLabel(batteryIndicator.charge),
                      batteryIndicator.low ? "ON" : "off", batteryConfig::lowVoltage);
 }
 
@@ -152,18 +183,24 @@ void blinkStatus(bool success) {
 }
 
 void enterDeepSleep() {
-  const uint64_t sleepDurationUs =
-      static_cast<uint64_t>(config::refreshIntervalMs) * 1000ULL;
+  const uint64_t sleepDurationUs = scheduleHold::sleepMicroseconds(
+      config::refreshIntervalMs, scheduleHoldSeconds);
 
   setStatusLed(0, 0, 0);
   panel.prepareForDeepSleep();
+  boardPower::prepareForDeepSleep();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   LittleFS.end();
 
-  DebugSerial.printf("Sleeping for %u minutes.\n",
-                     static_cast<unsigned>(config::refreshIntervalMs /
-                                           (60UL * 1000UL)));
+  if (scheduleHoldSeconds > 0) {
+    DebugSerial.printf("Schedule pause: sleeping for %u seconds until updates resume.\n",
+                       static_cast<unsigned>(scheduleHoldSeconds));
+  } else {
+    DebugSerial.printf("Sleeping for %u minutes.\n",
+                       static_cast<unsigned>(config::refreshIntervalMs /
+                                             (60UL * 1000UL)));
+  }
   DebugSerial.flush();
   delay(50);
   esp_sleep_enable_timer_wakeup(sleepDurationUs);
@@ -495,8 +532,8 @@ refresh::Response downloadImage(const char* url, String& responseETag,
     return refresh::Response::Failed;
   }
 
-  const char* headerKeys[] = {"ETag"};
-  http.collectHeaders(headerKeys, 1);
+  const char* headerKeys[] = {"ETag", scheduleHold::headerName};
+  http.collectHeaders(headerKeys, 2);
   // Ask for the same representation on conditional and unconditional requests.
   http.addHeader("Accept-Encoding", "identity");
   const char* previousETag = refresh::requestETag(lastDisplayed);
@@ -504,7 +541,15 @@ refresh::Response downloadImage(const char* url, String& responseETag,
   if (sentETag) http.addHeader("If-None-Match", previousETag);
 
   const int status = http.GET();
-  const auto response = refresh::classifyResponse(status, sentETag);
+  const uint32_t requestedHold = scheduleHold::parseSeconds(
+      http.header(scheduleHold::headerName).c_str());
+  const auto response = refresh::classifyResponse(status, sentETag, requestedHold);
+  if (response == refresh::Response::Deferred) {
+    scheduleHoldSeconds = requestedHold;
+    http.end();
+    DebugSerial.println("Server schedule paused: preserving the displayed image and battery badge.");
+    return response;  // No body, cache write, ETag adoption, or panel refresh.
+  }
   if (response == refresh::Response::NotModified) {
     responseETag = http.header("ETag");
     http.end();
@@ -813,6 +858,7 @@ bool fetchAndDisplay() {
                                    ? DisplayPanel::frameBytes : size_t{0};
   String responseETag;
   auto response = downloadImage(displayConfig::imageUrl, responseETag, expectedBytes);
+  if (response == refresh::Response::Deferred) return true;
   if (response == refresh::Response::Failed) {
     updateBatteryFromCache();
     return false;
@@ -832,6 +878,7 @@ bool fetchAndDisplay() {
     // Missing/corrupt cache: force a body instead of guessing the background.
     DebugSerial.println("Re-downloading unconditionally to restore the source cache.");
     response = downloadImage(displayConfig::imageUrl, responseETag, expectedBytes, false);
+    if (response == refresh::Response::Deferred) return true;
     if (response != refresh::Response::Downloaded) return false;
   }
   if (!prepareSourceFrame(temporaryImagePath, sourcePixels)) {
@@ -845,6 +892,7 @@ bool fetchAndDisplay() {
 }  // namespace
 
 void setup() {
+  boardPower::begin();
   // In particular, configure the large board's display power switch OFF
   // before filesystem/allocation/network operations can fail.
   panel.begin();
@@ -854,6 +902,7 @@ void setup() {
   delay(1500);
   setStatusLed(0, 0, 0);
   DebugSerial.println("\nFederFunk starting...");
+  boardPower::disableUnusedAudio();
   DebugSerial.printf("Display: %s, %ux%u, %u-byte frame.\n",
                      displayConfig::name, DisplayPanel::width,
                      DisplayPanel::height,

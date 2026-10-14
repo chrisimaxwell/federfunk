@@ -1,0 +1,11 @@
+[
+  {"scientific_name":"Haemorhous mexicanus","common_name":"House Finch","count":120,"max_confidence":0.97,"latest_heard":"11:58:00","hourly_counts":[0,0,0,0,0,0,2,8,26,40,16,28,0,0,0,0,0,0,0,0,0,0,0,0]},
+  {"scientific_name":"Bombycilla cedrorum","common_name":"Cedar Waxwing","count":60,"max_confidence":0.99,"latest_heard":"11:38:00"},
+  {"scientific_name":"Poecile atricapillus","common_name":"Black-capped Chickadee","count":40,"max_confidence":0.98,"latest_heard":"11:58:00"},
+  {"scientific_name":"Sturnus vulgaris","common_name":"European Starling","count":28,"max_confidence":0.99,"latest_heard":"11:41:00"},
+  {"scientific_name":"Turdus migratorius","common_name":"American Robin","count":18,"max_confidence":0.93,"latest_heard":"10:47:00"},
+  {"scientific_name":"Columba livia","common_name":"Rock Pigeon","count":15,"max_confidence":0.94,"latest_heard":"11:52:00"},
+  {"scientific_name":"Sitta canadensis","common_name":"Red-breasted Nuthatch","count":12,"max_confidence":0.99,"latest_heard":"10:05:00"},
+  {"scientific_name":"Colaptes auratus","common_name":"Northern Flicker","count":6,"max_confidence":0.98,"latest_heard":"11:51:00"},
+  {"scientific_name":"Spinus tristis","common_name":"American Goldfinch","count":2,"max_confidence":0.92,"latest_heard":"07:38:00"}
+]

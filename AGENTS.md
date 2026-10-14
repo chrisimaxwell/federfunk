@@ -81,6 +81,10 @@ Battery sensing is large-board-only: GPIO8, ADC1 channel 7, VBAT divided by
 three (schematic: 2 MOhm above / 1 MOhm below the sense node). BatteryConfig.h
 contains non-secret threshold/overlay settings; it does not change private
 Wi-Fi configuration. The small profile must never touch a battery GPIO.
+Local charging readout uses GPIO38 (ETA6098 active-LOW STAT) as an input only.
+The owner confirmed a connected cell (`batteryInstalled = true`). Without
+that confirmation or with unstable/invalid readings, report unknown; HIGH
+means not charging, not necessarily full. Never change charger settings.
 
 ## Commands
 
@@ -131,6 +135,11 @@ Keep board details in DisplaySelection.h and the relevant driver; keep the
 HTTP/JPEG/rendering path in main.cpp independent of the selected dimensions.
 Preserve six-color nibbles in raw frames. Preserve the 30-minute timer sleep
 on success and failure, LED-off behavior, and large-panel power-off/hold.
+The explicit daylight-schedule exception is a valid bounded
+`X-FederFunk-Hold-Seconds` response: leave the entire picture and local badge
+untouched and sleep until that hold expires. Never treat a hold as proof that
+an image was displayed. Disable unused audio before normal operation on the
+integrated board; the small profile must not touch its audio GPIOs.
 Do not add back the rejected near-white image cutoff.
 
 Unchanged images skip refresh: use ETag/If-None-Match/304 where available,
@@ -142,7 +151,8 @@ so partial failures can't cause a false skip. Never trust a downloaded file
 or an unsolicited 304 as evidence that a frame was displayed successfully.
 
 The local battery badge is an explicit exception to preserving the raw frame:
-change only its bottom-left 192x56 pixel rectangle. Preserve the original
+change only its bottom-left 384x56 pixel rectangle (expanded locally for the
+owner-requested charging-status text). Preserve the original
 source in LittleFS; never cache the overlaid frame as the source or erase a
 warning to white. Compare final pixels for refresh decisions, but keep a
 separate source fingerprint to validate cache reuse. An HTTP 304 skips refresh
@@ -175,7 +185,14 @@ clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
 million pixels, both IC payloads, DC/CS, BUSY timeouts, and power cleanup.
 It doesn't verify the electrical behavior of an actual display.
 
-There is currently no captive portal, runtime configuration website, or OTA
-workflow. Don't describe those planned features as working.
+The `naturalist/` companion provides a LAN dashboard for artwork, counts,
+labels, QR and solar scheduling. It does not configure ESP32 Wi-Fi or flash
+firmware. There is no captive portal or OTA workflow.
+Portrait artwork is inverse-rotated by the companion into the established
+landscape wire protocol; do not add a second rotation in the driver.
+Every catalogue asset must have source evidence, hashes and a recorded visual
+review. The default collage shows all available species heard today; missing
+illustrations remain explicit in the dashboard and must never be replaced by
+another species. Keep live station data and local QR addresses out of Git.
 USB disappears during deep sleep; that is normal. Hold BOOT, tap RESET/EN,
 release BOOT for the ROM bootloader when another upload is needed.
