@@ -195,5 +195,11 @@ Every catalogue asset must have source evidence, hashes and a recorded visual
 review. The default collage shows all available species heard today; missing
 illustrations remain explicit in the dashboard and must never be replaced by
 another species. Keep live station data and local QR addresses out of Git.
-USB disappears during deep sleep; that is normal. Hold BOOT, tap RESET/EN,
-release BOOT for the ROM bootloader when another upload is needed.
+Native USB disappears during deep sleep; that is normal. The integrated board's
+onboard CH343 bridge (VID 1A86, PID 55D3) has schematic-confirmed DTR/RTS reset
+wiring. It can enter the ROM loader with esptool's default reset, avoiding a
+physical button press. Identify the bridge, verify the same ESP32 MAC and
+flash size, then upload through its reappearing native USB port. A normal RTS
+reset with DTR released boots the application; monitor native USB with DTR/RTS
+disabled. If software reset is unavailable, hold BOOT, tap RESET/EN, then
+release BOOT for the ROM bootloader.

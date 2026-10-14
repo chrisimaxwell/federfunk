@@ -4,8 +4,10 @@ Thomas's reported baseline is about **11.06 mA asleep**, at roughly 4.10 V
 through the battery input with USB disconnected. It is a whole-board
 measurement. On **2026-10-14**, the installed audio shutdown firmware reported
 both codecs confirmed and completed a display refresh followed by sleep.
-The revised battery-only warning and dashboard telemetry were subsequently
-prepared in source and still require their own authorized firmware upload.
+The revised battery-only warning and dashboard telemetry were also installed
+and verified that day: a valid 100% estimate kept the warning off, the dashboard
+received the charging state, and the frame completed its refresh and entered
+30-minute sleep. The owner confirmed the revised artwork colors.
 **Sleep current after audio shutdown has not yet been measured.** Do not
 replace the baseline with an estimated lower figure.
 
