@@ -7,8 +7,9 @@ German *Feder* (feather) and *Funk* (radio): a little wireless window into
 the birds outside.
 
 ESP32-S3 firmware for two Waveshare E Ink Spectra 6 displays. It joins Wi-Fi,
-downloads a JPEG or a packed six-color frame over HTTP, refreshes the screen,
-and then deep-sleeps for the configured interval (currently 30 minutes).
+downloads a JPEG or a packed six-color frame over HTTP, refreshes only when
+the displayed pixels change, and then deep-sleeps for the configured interval
+(currently 30 minutes).
 
 ## Start with your agent
 
@@ -122,9 +123,9 @@ directly into the ESP32-S3.
 
 The breakout board's WS2812 RGB status LED is connected to GPIO 48. After each
 scheduled update it blinks green three times when the download, frame
-validation, and display refresh all succeed, or red three times if any step
-fails. Its pin, brightness, blink count, and timing are configurable in
-`BirdDisplayConfig.h`.
+validation, and display refresh succeed (or the image is unchanged), or red
+three times if any step fails. Its pin, brightness, blink count, and timing
+are configurable in `BirdDisplayConfig.h`.
 
 ## Large display wiring
 
@@ -211,6 +212,85 @@ The driver rotates pixel addressing by 90 degrees during transfer, using
 only a 300-byte row buffer. It preserves all color codes and pixels without
 resizing, cropping, dithering, or allocating another full framebuffer.
 
+### Unchanged images
+
+At each 30-minute wake, FederFunk checks whether an update is needed:
+
+- If the server supplied an `ETag` for the last successfully displayed image,
+  the next request sends `If-None-Match`. A `304 Not Modified` skips both the
+  image download and the e-paper refresh, unless the local battery indicator
+  changed (see below).
+- If the server returns an image (including servers without ETags), the
+  firmware validates/renders it and compares a SHA-256 fingerprint of the
+  final packed panel pixels, including any battery badge. Identical pixels
+  skip the refresh, even if a JPEG's metadata or the ETag changed.
+
+The fingerprint and ETag are retained in RTC memory across timer deep sleep,
+without extra flash writes for change-detection metadata. This works with
+both sizes and both JPEG and `.bin` URLs; no new configuration is required.
+A manual reset, power loss, or firmware upload forces a fresh download and
+refresh. Failed downloads don't become the new reference image, and a failed
+panel refresh invalidates the reference so the next attempt repairs it.
+Both unchanged and failed updates still end with the normal sleep interval.
+
+Serial output says
+`Image and battery indicator unchanged; skipping e-paper refresh.`
+or `Image pixels unchanged; skipping e-paper refresh.` when an update is skipped.
+For best battery life, the backend should return a stable, quoted ETag for
+unchanged image content and honor `If-None-Match` with a bodyless 304 response.
+`X-BirdFrame-Revision` alone isn't used: a composition revision need not mean
+that the displayed pixels changed.
+
+### Battery indicator (13.3-inch board only)
+
+The integrated board measures battery voltage on GPIO8 (ADC1 channel 7)
+through its 2 MOhm / 1 MOhm divider. The firmware uses calibrated millivolt
+readings and multiplies by three, matching
+[Waveshare's schematic](https://files.waveshare.com/wiki/ESP32-S3-ePaper-13.3E6/ESP32-S3-ePaper-Driver-Board.pdf)
+and [ADC example](https://docs.waveshare.com/ESP32-S3-ePaper-13.3E6/Arduino#01_adc_test).
+The small breakout profile does not read any battery GPIO or draw a badge.
+
+Edit the non-secret settings in `src/BatteryConfig.h`, then rebuild/upload:
+
+```cpp
+constexpr bool enabled = true;
+constexpr bool showOnlyWhenLow = true;
+constexpr float lowVoltage = 3.5f;
+constexpr float recoveryHysteresis = 0.1f;
+```
+
+With these defaults, a red battery symbol, exclamation mark, and estimated
+percentage appear at the bottom left below **3.5 V**. The warning stays until
+the voltage reaches **3.6 V** to avoid toggling around the threshold. Set
+`showOnlyWhenLow = false` to always show the battery/percentage bar (green
+when healthy, red when low), or `enabled = false` to leave the image untouched.
+The badge covers only a 192×56-pixel rectangle, 16 pixels from the left and
+bottom edges; reserve that corner in your backend layout if needed.
+
+Battery is sampled once each wake, before Wi-Fi and panel power are enabled,
+using 32 samples with outliers removed. A voltage change alone does not
+trigger refresh: only a change to the visible badge does. Percentages are
+rounded to `percentageStep` (5% by default) to reduce noise-driven refreshes.
+An invalid reading retains the previous indicator, not a fabricated 0%.
+
+The original, unmodified source image stays in LittleFS. If HTTP returns 304
+but the badge needs to appear, disappear, or change, the firmware verifies
+that cache and redraws it with the current badge. Removing the warning
+restores the original pixels, not a white rectangle. A missing/corrupt cache
+forces a full download. During network failures, a verified cache from the
+last successful display can still show a battery change; the network failure
+is logged and the normal 30-minute sleep remains. This fallback requires a
+previous successful update in the current power session.
+
+Percentage is only a voltage-based estimate, **not a fuel-gauge measurement**.
+`emptyVoltage` (3.3 V) and `fullVoltage` (4.2 V) set its linear scale; adjust
+for your battery. Charging and load affect the estimate. The voltage threshold
+uses the measured voltage directly, independently of that percentage scale.
+Compare the logged voltage with a multimeter on your actual board; set
+`voltageCalibration` to *actual voltage / logged voltage* if correction is
+needed. This is an advisory display feature, not a battery cutoff or charge
+controller.
+
 ## Build and upload
 
 ```sh
@@ -239,6 +319,13 @@ deep sleep, including after download or display failures.
 Deep sleep minimizes the ESP32 chip's consumption, but the complete breakout
 board may still draw additional current through its regulator, USB-to-serial
 chip, power LED, and the WS2812's standby current.
+
+A bench measurement of the integrated 13.3-inch board with this firmware
+settled at approximately **11 mA at 4.10 V** after a completed refresh,
+powered through the battery connector with USB disconnected. That baseline
+alone is about 265 mAh per day, before updates. This is a whole-board result,
+not the ESP32 chip's deep-sleep specification; further board-level power
+optimization is still needed.
 
 ## Serving a test image
 
@@ -336,6 +423,12 @@ clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -Itests/host -Isrc tests/large_panel_test.cpp src/Epaper13in3e.cpp \
   -o /tmp/birddisplay-large-panel-test
 /tmp/birddisplay-large-panel-test
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Isrc tests/refresh_state_test.cpp -o /tmp/federfunk-refresh-test
+/tmp/federfunk-refresh-test
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Isrc tests/battery_indicator_test.cpp -o /tmp/federfunk-battery-test
+/tmp/federfunk-battery-test
 ```
 
 This verifies software behavior; a refresh on the physical board is still

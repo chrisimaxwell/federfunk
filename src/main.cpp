@@ -9,6 +9,9 @@
 #include <esp_sleep.h>
 #include <esp_arduino_version.h>
 #include <esp32-hal-rgb-led.h>
+#include <esp_attr.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/version.h>
 
 #if __has_include("BirdDisplayConfig.h")
 #include "BirdDisplayConfig.h"
@@ -18,11 +21,18 @@
 #endif
 
 #include "DisplaySelection.h"
+#include "BatteryConfig.h"
+#include "BatteryIndicator.h"
+#include "RefreshState.h"
 
 namespace {
 
 constexpr char imagePath[] = "/image.jpg";
 constexpr char temporaryImagePath[] = "/image.tmp";
+
+RTC_DATA_ATTR refresh::State lastDisplayed{};
+refresh::Digest refreshContext{};
+battery::Indicator batteryIndicator{};
 
 auto& DebugSerial = Serial;
 SPIClass epdSpi(FSPI);
@@ -32,6 +42,88 @@ uint8_t* frame = nullptr;
 uint16_t* decodedRgb = nullptr;
 int decodedRgbWidth = 0;
 int decodedRgbHeight = 0;
+
+bool fingerprint(const uint8_t* data, size_t size, refresh::Digest& digest) {
+#if MBEDTLS_VERSION_MAJOR >= 3
+  return mbedtls_sha256(data, size, digest.data(), 0) == 0;
+#else
+  return mbedtls_sha256_ret(data, size, digest.data(), 0) == 0;
+#endif
+}
+
+bool initializeRefreshState() {
+  // Bind the remembered image/ETag to this URL, canvas, and rendering settings.
+  // Hash the URL rather than retaining another copy of a private backend URL.
+  uint8_t contextBytes[refresh::digestBytes + 12 + sizeof(float) * 6];
+  refresh::Digest urlDigest;
+  if (!fingerprint(reinterpret_cast<const uint8_t*>(displayConfig::imageUrl),
+                   strlen(displayConfig::imageUrl), urlDigest)) {
+    refresh::invalidate(lastDisplayed);
+    return false;
+  }
+  memcpy(contextBytes, urlDigest.data(), urlDigest.size());
+  const uint32_t dimensions[] = {DisplayPanel::width, DisplayPanel::height};
+  for (size_t i = 0; i < 2; ++i) {
+    for (size_t byte = 0; byte < 4; ++byte) {
+      contextBytes[refresh::digestBytes + i * 4 + byte] =
+          static_cast<uint8_t>(dimensions[i] >> (byte * 8));
+    }
+  }
+  contextBytes[refresh::digestBytes + 8] = config::enableDithering;
+  contextBytes[refresh::digestBytes + 9] = config::bypassResamplingWhenExactSize;
+  contextBytes[refresh::digestBytes + 10] =
+      batteryConfig::enabled && displayConfig::batterySensePin >= 0;
+  contextBytes[refresh::digestBytes + 11] = batteryConfig::showOnlyWhenLow;
+  const float batterySettings[] = {
+      batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
+      batteryConfig::emptyVoltage, batteryConfig::fullVoltage,
+      batteryConfig::voltageCalibration,
+      static_cast<float>(batteryConfig::percentageStep)};
+  memcpy(contextBytes + refresh::digestBytes + 12, batterySettings,
+         sizeof(batterySettings));
+  if (!fingerprint(contextBytes, sizeof(contextBytes), refreshContext)) {
+    refresh::invalidate(lastDisplayed);
+    return false;
+  }
+  const bool retained = refresh::resume(
+      lastDisplayed, esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER,
+      refreshContext);
+  DebugSerial.println(retained ? "Last displayed frame retained across sleep."
+                               : "First update after reset: refresh required.");
+  return true;
+}
+
+void sampleBattery() {
+  if (!batteryConfig::enabled || displayConfig::batterySensePin < 0) return;
+  const auto previous = lastDisplayed.version == refresh::stateVersion
+                            ? battery::fromKey(lastDisplayed.overlayKey)
+                            : battery::Indicator{};
+  // Unknown voltage must not remove an already displayed charge warning.
+  batteryIndicator = previous;
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);  // Arduino name for the S3's 12 dB setting.
+  (void)analogReadMilliVolts(displayConfig::batterySensePin);
+  delay(10);
+  const float volts = battery::sampleVoltage(
+      []() {
+        const auto millivolts = analogReadMilliVolts(displayConfig::batterySensePin);
+        delay(2);
+        return millivolts;
+      },
+      displayConfig::batteryVoltageDivider, batteryConfig::voltageCalibration);
+  if (!battery::validVoltage(volts)) {
+    DebugSerial.printf("Battery reading invalid (%.2f V); retaining the previous indicator.\n",
+                       volts);
+    return;
+  }
+  batteryIndicator = battery::evaluate(
+      volts, previous, batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
+      batteryConfig::showOnlyWhenLow, batteryConfig::emptyVoltage,
+      batteryConfig::fullVoltage, batteryConfig::percentageStep);
+  DebugSerial.printf("Battery: %.2f V, estimated %u%%; low warning %s (threshold %.2f V).\n",
+                     volts, batteryIndicator.percentage,
+                     batteryIndicator.low ? "ON" : "off", batteryConfig::lowVoltage);
+}
 
 void setStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
   if (displayConfig::statusLedPin >= 0) {
@@ -383,10 +475,12 @@ bool urlEndsWithBin(const char* url) {
   return length >= 4 && strcmp(url + length - 4, ".bin") == 0;
 }
 
-bool downloadImage(const char* url, size_t expectedBytes = 0) {
+refresh::Response downloadImage(const char* url, String& responseETag,
+                                size_t expectedBytes = 0, bool allowConditional = true) {
+  responseETag = "";
   if (strncmp(url, "http://", 7) != 0) {
     DebugSerial.println("IMAGE_URL must begin with http:// in this first version.");
-    return false;
+    return refresh::Response::Failed;
   }
 
   WiFiClient client;
@@ -398,16 +492,33 @@ bool downloadImage(const char* url, size_t expectedBytes = 0) {
   DebugSerial.printf("Downloading %s\n", url);
   if (!http.begin(client, url)) {
     DebugSerial.println("Could not start the HTTP request.");
-    return false;
+    return refresh::Response::Failed;
   }
 
+  const char* headerKeys[] = {"ETag"};
+  http.collectHeaders(headerKeys, 1);
+  // Ask for the same representation on conditional and unconditional requests.
+  http.addHeader("Accept-Encoding", "identity");
+  const char* previousETag = refresh::requestETag(lastDisplayed);
+  const bool sentETag = allowConditional && previousETag[0] != '\0';
+  if (sentETag) http.addHeader("If-None-Match", previousETag);
+
   const int status = http.GET();
-  if (status != HTTP_CODE_OK) {
+  const auto response = refresh::classifyResponse(status, sentETag);
+  if (response == refresh::Response::NotModified) {
+    responseETag = http.header("ETag");
+    http.end();
+    DebugSerial.println("Server image unchanged (HTTP 304).");
+    return response;
+  }
+  if (response == refresh::Response::Failed) {
     DebugSerial.printf("HTTP request failed: %d (%s)\n", status,
                   http.errorToString(status).c_str());
     http.end();
-    return false;
+    return response;
   }
+
+  responseETag = http.header("ETag");
 
   const int contentLength = http.getSize();
   if (expectedBytes != 0 && contentLength >= 0 &&
@@ -415,7 +526,7 @@ bool downloadImage(const char* url, size_t expectedBytes = 0) {
     DebugSerial.printf("Unexpected Content-Length: %d (expected %u).\n",
                        contentLength, static_cast<unsigned>(expectedBytes));
     http.end();
-    return false;
+    return refresh::Response::Failed;
   }
 
   // FILE_WRITE uses truncate/create semantics, so no pre-delete is needed.
@@ -423,7 +534,7 @@ bool downloadImage(const char* url, size_t expectedBytes = 0) {
   if (!destination) {
     DebugSerial.println("Could not open temporary image file.");
     http.end();
-    return false;
+    return refresh::Response::Failed;
   }
 
   const int bytesWritten = http.writeToStream(&destination);
@@ -433,18 +544,21 @@ bool downloadImage(const char* url, size_t expectedBytes = 0) {
   if (bytesWritten <= 0) {
     DebugSerial.printf("Image download failed while reading body: %d\n", bytesWritten);
     LittleFS.remove(temporaryImagePath);
-    return false;
+    return refresh::Response::Failed;
   }
 
-  if (expectedBytes != 0 && static_cast<size_t>(bytesWritten) != expectedBytes) {
+  if ((expectedBytes != 0 && static_cast<size_t>(bytesWritten) != expectedBytes) ||
+      (contentLength >= 0 && bytesWritten != contentLength)) {
     DebugSerial.printf("Downloaded %d bytes; expected exactly %u.\n",
-                       bytesWritten, static_cast<unsigned>(expectedBytes));
+                       bytesWritten, static_cast<unsigned>(
+                                         expectedBytes != 0 ? expectedBytes
+                                                            : contentLength));
     LittleFS.remove(temporaryImagePath);
-    return false;
+    return refresh::Response::Failed;
   }
 
   DebugSerial.printf("Downloaded %d bytes.\n", bytesWritten);
-  return true;
+  return refresh::Response::Downloaded;
 }
 
 bool isPanelColorCode(uint8_t code) {
@@ -621,33 +735,111 @@ bool decodeImageToFrame(const char* path) {
   return rendered;
 }
 
+bool prepareSourceFrame(const char* path, refresh::Digest& sourcePixels) {
+  const bool prepared = urlEndsWithBin(displayConfig::imageUrl)
+                            ? loadRawPanelFrame(path)
+                            : decodeImageToFrame(path);
+  return prepared && fingerprint(frame, DisplayPanel::frameBytes, sourcePixels);
+}
+
+bool loadKnownCachedFrame(refresh::Digest& sourcePixels) {
+  // The cache is the unmodified source, not a frame with a painted-over corner.
+  // Verify it against the last successful source so removing the badge restores
+  // the backend's original pixels, and a corrupt/stale cache is never trusted.
+  if (lastDisplayed.version != refresh::stateVersion ||
+      !prepareSourceFrame(imagePath, sourcePixels) ||
+      !refresh::matchesSource(lastDisplayed, sourcePixels)) {
+    DebugSerial.println("No verified source cache available for a battery-only update.");
+    return false;
+  }
+  return true;
+}
+
+bool displayPreparedFrame(const refresh::Digest& sourcePixels, const String& etag,
+                          bool downloaded) {
+  if (downloaded) {
+    // Keep the original body, even if only pixels hidden by the badge changed.
+    // Saving the overlaid frame would make it impossible to remove the badge.
+    LittleFS.remove(imagePath);
+    if (!LittleFS.rename(temporaryImagePath, imagePath)) {
+      DebugSerial.println("Could not commit the validated image to LittleFS.");
+      LittleFS.remove(temporaryImagePath);
+      return false;
+    }
+  }
+  battery::draw(frame, DisplayPanel::width, DisplayPanel::height, batteryIndicator);
+  refresh::Digest pixels;
+  if (!fingerprint(frame, DisplayPanel::frameBytes, pixels)) {
+    DebugSerial.println("Could not fingerprint the display frame.");
+    return false;
+  }
+  const uint16_t overlayKey = battery::key(batteryIndicator);
+  if (refresh::matchesPixels(lastDisplayed, pixels)) {
+    refresh::remember(lastDisplayed, refreshContext, pixels, etag.c_str(),
+                      sourcePixels, overlayKey);
+    DebugSerial.println("Image pixels unchanged; skipping e-paper refresh.");
+    return true;
+  }
+  // A partial refresh makes the physical screen uncertain; repair on next wake.
+  refresh::invalidate(lastDisplayed);
+  if (!panel.display(frame)) return false;
+  refresh::remember(lastDisplayed, refreshContext, pixels, etag.c_str(),
+                    sourcePixels, overlayKey);
+  return true;
+}
+
+void updateBatteryFromCache() {
+  if (lastDisplayed.version != refresh::stateVersion ||
+      !refresh::overlayChanged(lastDisplayed, battery::key(batteryIndicator))) return;
+  refresh::Digest sourcePixels;
+  if (!loadKnownCachedFrame(sourcePixels)) return;
+  const String etag = refresh::requestETag(lastDisplayed);
+  DebugSerial.println("Updating battery indicator from cached image; network update failed.");
+  if (!displayPreparedFrame(sourcePixels, etag, false)) {
+    DebugSerial.println("Cached battery indicator refresh failed.");
+  }
+}
+
 bool fetchAndDisplay() {
   if (displayConfig::imageUrl[0] == '\0') {
     DebugSerial.println("Configure the selected display's image URL first.");
     return false;
   }
-  if (!connectToWifi()) return false;
-  const bool rawPanelFrame = urlEndsWithBin(displayConfig::imageUrl);
-  const size_t expectedBytes =
-      rawPanelFrame ? DisplayPanel::frameBytes : size_t{0};
-  if (!downloadImage(displayConfig::imageUrl, expectedBytes)) return false;
-
-  const bool prepared = rawPanelFrame
-                            ? loadRawPanelFrame(temporaryImagePath)
-                            : decodeImageToFrame(temporaryImagePath);
-  if (!prepared) {
-    LittleFS.remove(temporaryImagePath);
+  if (!connectToWifi()) {
+    updateBatteryFromCache();
     return false;
   }
-
-  // Only replace the cached image after the complete download has decoded.
-  LittleFS.remove(imagePath);
-  if (!LittleFS.rename(temporaryImagePath, imagePath)) {
-    DebugSerial.println("Could not commit the validated image to LittleFS.");
-    LittleFS.remove(temporaryImagePath);
+  const size_t expectedBytes = urlEndsWithBin(displayConfig::imageUrl)
+                                   ? DisplayPanel::frameBytes : size_t{0};
+  String responseETag;
+  auto response = downloadImage(displayConfig::imageUrl, responseETag, expectedBytes);
+  if (response == refresh::Response::Failed) {
+    updateBatteryFromCache();
     return false;
   }
-  return panel.display(frame);
+  refresh::Digest sourcePixels;
+  if (response == refresh::Response::NotModified) {
+    if (!refresh::overlayChanged(lastDisplayed, battery::key(batteryIndicator))) {
+      if (responseETag.length() != 0) refresh::setETag(lastDisplayed, responseETag.c_str());
+      DebugSerial.println("Image and battery indicator unchanged; skipping e-paper refresh.");
+      return true;
+    }
+    if (loadKnownCachedFrame(sourcePixels)) {
+      if (responseETag.length() == 0) responseETag = refresh::requestETag(lastDisplayed);
+      DebugSerial.println("Image unchanged; refreshing only because the battery indicator changed.");
+      return displayPreparedFrame(sourcePixels, responseETag, false);
+    }
+    // Missing/corrupt cache: force a body instead of guessing the background.
+    DebugSerial.println("Re-downloading unconditionally to restore the source cache.");
+    response = downloadImage(displayConfig::imageUrl, responseETag, expectedBytes, false);
+    if (response != refresh::Response::Downloaded) return false;
+  }
+  if (!prepareSourceFrame(temporaryImagePath, sourcePixels)) {
+    LittleFS.remove(temporaryImagePath);
+    updateBatteryFromCache();
+    return false;
+  }
+  return displayPreparedFrame(sourcePixels, responseETag, true);
 }
 
 }  // namespace
@@ -666,6 +858,17 @@ void setup() {
                      displayConfig::name, DisplayPanel::width,
                      DisplayPanel::height,
                      static_cast<unsigned>(DisplayPanel::frameBytes));
+
+  if (!initializeRefreshState()) {
+    DebugSerial.println("Could not initialize image change detection.");
+#ifndef BIRDDISPLAY_DIAGNOSTIC_NO_WIFI
+    blinkStatus(false);
+    enterDeepSleep();
+#endif
+    return;
+  }
+  // Read with Wi-Fi and display power off to reduce load-induced voltage sag.
+  sampleBattery();
 
   if (!LittleFS.begin(true)) {
     DebugSerial.println("LittleFS mount failed.");
@@ -706,7 +909,7 @@ void setup() {
 }
 
 void loop() {
-  // Normal operation never reaches loop(): setup() refreshes once and enters
-  // timer deep sleep. Keep diagnostic builds responsive without a busy loop.
+  // Normal operation never reaches loop(): setup() checks for an update and
+  // enters timer deep sleep. Keep diagnostic builds responsive without a busy loop.
   delay(1000);
 }

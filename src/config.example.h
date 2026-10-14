@@ -11,6 +11,7 @@ static constexpr char imageUrl[] = "http://192.168.1.10:8000/image.jpg";
 // Used only by the esp32-s3-13in3e6 build profile. Raw .bin frames must be
 // 1600x1200 landscape, exactly 960000 bytes.
 static constexpr char largeImageUrl[] = "http://192.168.1.10:8000/image_large.bin";
+// Large-board battery warning/percentage settings are in BatteryConfig.h.
 
 // How long to deep-sleep after each update. A full refresh takes about 25 s.
 static constexpr uint32_t refreshIntervalMs = 30UL * 60UL * 1000UL;

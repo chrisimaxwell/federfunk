@@ -77,6 +77,11 @@ Integrated large-board wiring is fixed: SCK 9, MOSI 46, master CS 10, slave
 CS 3, DC 11, RST 2, BUSY 12, display power enable 1. No external jumpers are
 needed. The small breakout's GPIO48 WS2812 output is disabled on this board.
 
+Battery sensing is large-board-only: GPIO8, ADC1 channel 7, VBAT divided by
+three (schematic: 2 MOhm above / 1 MOhm below the sense node). BatteryConfig.h
+contains non-secret threshold/overlay settings; it does not change private
+Wi-Fi configuration. The small profile must never touch a battery GPIO.
+
 ## Commands
 
 Run from the repository root. On Windows substitute `.venv/Scripts/pio.exe`
@@ -128,6 +133,25 @@ Preserve six-color nibbles in raw frames. Preserve the 30-minute timer sleep
 on success and failure, LED-off behavior, and large-panel power-off/hold.
 Do not add back the rejected near-white image cutoff.
 
+Unchanged images skip refresh: use ETag/If-None-Match/304 where available,
+otherwise compare SHA-256 of validated final panel pixels. RefreshState.h
+holds only the last successfully displayed frame's fingerprint/ETag in RTC
+memory, bound to URL, canvas, JPEG, and battery settings. Cold boots/resets refresh;
+timer wakes retain state. Invalidate the reference before a physical refresh
+so partial failures can't cause a false skip. Never trust a downloaded file
+or an unsolicited 304 as evidence that a frame was displayed successfully.
+
+The local battery badge is an explicit exception to preserving the raw frame:
+change only its bottom-left 192x56 pixel rectangle. Preserve the original
+source in LittleFS; never cache the overlaid frame as the source or erase a
+warning to white. Compare final pixels for refresh decisions, but keep a
+separate source fingerprint to validate cache reuse. An HTTP 304 skips refresh
+only if the local badge is unchanged. A badge transition can refresh the
+verified cached source, even during network failure; missing/corrupt cache
+requires an unconditional download, not guessing the background. Preserve
+normal failure status and sleep. Test thresholds, hysteresis, invalid ADC
+readings, badge bounds, cache restoration, and unchanged-source overlay changes.
+
 For a code change affecting shared firmware, build both environments. Build
 with placeholder config in CI. Don't publish build artifacts. For a new
 hardware setup, build only the selected environment unless changes affect
@@ -139,13 +163,19 @@ clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -Itests/host -Isrc tests/large_panel_test.cpp src/Epaper13in3e.cpp \
   -o /tmp/federfunk-large-panel-test
 /tmp/federfunk-large-panel-test
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Isrc tests/refresh_state_test.cpp -o /tmp/federfunk-refresh-test
+/tmp/federfunk-refresh-test
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Isrc tests/battery_indicator_test.cpp -o /tmp/federfunk-battery-test
+/tmp/federfunk-battery-test
 ```
 
 `g++` can replace `clang++`. The large-panel host test validates all 1.92
 million pixels, both IC payloads, DC/CS, BUSY timeouts, and power cleanup.
 It doesn't verify the electrical behavior of an actual display.
 
-There is currently no captive portal, runtime configuration website, ETag
-handling, or OTA workflow. Don't describe those planned features as working.
+There is currently no captive portal, runtime configuration website, or OTA
+workflow. Don't describe those planned features as working.
 USB disappears during deep sleep; that is normal. Hold BOOT, tap RESET/EN,
 release BOOT for the ROM bootloader when another upload is needed.

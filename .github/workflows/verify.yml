@@ -22,6 +22,16 @@ jobs:
             -Itests/host -Isrc tests/large_panel_test.cpp src/Epaper13in3e.cpp \
             -o /tmp/federfunk-large-panel-test
           /tmp/federfunk-large-panel-test
+      - name: Verify unchanged-image detection and retry safeguards
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -Isrc tests/refresh_state_test.cpp -o /tmp/federfunk-refresh-test
+          /tmp/federfunk-refresh-test
+      - name: Verify battery warning, sampling, and overlay boundaries
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -Isrc tests/battery_indicator_test.cpp -o /tmp/federfunk-battery-test
+          /tmp/federfunk-battery-test
 
   firmware:
     runs-on: ubuntu-latest
