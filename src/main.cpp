@@ -24,6 +24,7 @@
 #include "BoardPower.h"
 #include "BatteryConfig.h"
 #include "BatteryIndicator.h"
+#include "BatteryTelemetry.h"
 #include "RefreshState.h"
 #include "ScheduleHold.h"
 
@@ -35,6 +36,7 @@ constexpr char temporaryImagePath[] = "/image.tmp";
 RTC_DATA_ATTR refresh::State lastDisplayed{};
 refresh::Digest refreshContext{};
 battery::Indicator batteryIndicator{};
+battery::Telemetry batteryTelemetry{};
 // Per-wake only. A future network failure retains the normal retry interval.
 uint32_t scheduleHoldSeconds = 0;
 
@@ -58,7 +60,7 @@ bool fingerprint(const uint8_t* data, size_t size, refresh::Digest& digest) {
 bool initializeRefreshState() {
   // Bind the remembered image/ETag to this URL, canvas, and rendering settings.
   // Hash the URL rather than retaining another copy of a private backend URL.
-  uint8_t contextBytes[refresh::digestBytes + 14 + sizeof(float) * 6];
+  uint8_t contextBytes[refresh::digestBytes + 13 + sizeof(float) * 3];
   refresh::Digest urlDigest;
   if (!fingerprint(reinterpret_cast<const uint8_t*>(displayConfig::imageUrl),
                    strlen(displayConfig::imageUrl), urlDigest)) {
@@ -77,15 +79,12 @@ bool initializeRefreshState() {
   contextBytes[refresh::digestBytes + 9] = config::bypassResamplingWhenExactSize;
   contextBytes[refresh::digestBytes + 10] =
       batteryConfig::enabled && displayConfig::batterySensePin >= 0;
-  contextBytes[refresh::digestBytes + 11] = batteryConfig::showOnlyWhenLow;
-  contextBytes[refresh::digestBytes + 12] = batteryConfig::batteryInstalled;
-  contextBytes[refresh::digestBytes + 13] = batteryConfig::reportCharging;
+  contextBytes[refresh::digestBytes + 11] = batteryConfig::batteryInstalled;
+  contextBytes[refresh::digestBytes + 12] = batteryConfig::lowPercentage;
   const float batterySettings[] = {
-      batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
       batteryConfig::emptyVoltage, batteryConfig::fullVoltage,
-      batteryConfig::voltageCalibration,
-      static_cast<float>(batteryConfig::percentageStep)};
-  memcpy(contextBytes + refresh::digestBytes + 14, batterySettings,
+      batteryConfig::voltageCalibration};
+  memcpy(contextBytes + refresh::digestBytes + 13, batterySettings,
          sizeof(batterySettings));
   if (!fingerprint(contextBytes, sizeof(contextBytes), refreshContext)) {
     refresh::invalidate(lastDisplayed);
@@ -100,6 +99,7 @@ bool initializeRefreshState() {
 }
 
 void sampleBattery() {
+  batteryTelemetry = {};
   if (!batteryConfig::enabled || displayConfig::batterySensePin < 0) return;
   if (!batteryConfig::batteryInstalled) {
     DebugSerial.println("Battery not installed/configured; battery readout disabled.");
@@ -108,7 +108,7 @@ void sampleBattery() {
   const auto previous = lastDisplayed.version == refresh::stateVersion
                             ? battery::fromKey(lastDisplayed.overlayKey)
                             : battery::Indicator{};
-  // Unknown voltage must not remove an already displayed charge warning.
+  // Unknown voltage must not remove an already displayed low-battery warning.
   batteryIndicator = previous;
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);  // Arduino name for the S3's 12 dB setting.
@@ -122,15 +122,15 @@ void sampleBattery() {
       },
       displayConfig::batteryVoltageDivider, batteryConfig::voltageCalibration);
   if (!battery::validVoltage(volts)) {
-    batteryIndicator.charge = battery::ChargeState::Unknown;
     DebugSerial.printf("Battery reading invalid (%.2f V); retaining the previous indicator.\n",
                        volts);
     return;
   }
   batteryIndicator = battery::evaluate(
-      volts, previous, batteryConfig::lowVoltage, batteryConfig::recoveryHysteresis,
-      batteryConfig::showOnlyWhenLow, batteryConfig::emptyVoltage,
-      batteryConfig::fullVoltage, batteryConfig::percentageStep);
+      volts, previous, batteryConfig::lowPercentage,
+      batteryConfig::emptyVoltage, batteryConfig::fullVoltage);
+  batteryTelemetry.voltage = volts;
+  batteryTelemetry.percentage = batteryIndicator.percentage;
   if (batteryConfig::reportCharging && displayConfig::chargeStatusPin >= 0) {
     // Input only: never alter the charger or power rails. ETA6098 STAT is
     // open-drain; the pull-up makes its inactive state readable.
@@ -142,18 +142,18 @@ void sampleBattery() {
       lowSamples += digitalRead(displayConfig::chargeStatusPin) == LOW;
       delay(2);
     }
-    batteryIndicator.charge = battery::classifyCharge(
+    batteryTelemetry.charge = battery::classifyCharge(
         lowSamples, count, batteryConfig::batteryInstalled, true);
     // Remove the internal pull-up before sleep to avoid a continuous load
     // through STAT when it is LOW. The next wake configures it again.
     pinMode(displayConfig::chargeStatusPin, INPUT);
     DebugSerial.printf("Charger STAT: %u/%u LOW samples; %s.\n", lowSamples,
-                       count, battery::chargeLabel(batteryIndicator.charge));
+                       count, battery::chargeLabel(batteryTelemetry.charge));
   }
-  DebugSerial.printf("Battery: %.2f V, estimated %u%%; %s; low warning %s (threshold %.2f V).\n",
+  DebugSerial.printf("Battery: %.2f V, estimated %u%%; %s; low warning %s (below %u%%).\n",
                      volts, batteryIndicator.percentage,
-                     battery::chargeLabel(batteryIndicator.charge),
-                     batteryIndicator.low ? "ON" : "off", batteryConfig::lowVoltage);
+                     battery::chargeLabel(batteryTelemetry.charge),
+                     batteryIndicator.low ? "ON" : "off", batteryConfig::lowPercentage);
 }
 
 void setStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
@@ -536,6 +536,9 @@ refresh::Response downloadImage(const char* url, String& responseETag,
   http.collectHeaders(headerKeys, 2);
   // Ask for the same representation on conditional and unconditional requests.
   http.addHeader("Accept-Encoding", "identity");
+  battery::addTelemetryHeaders(batteryTelemetry, [&http](const char* name, const char* value) {
+    http.addHeader(name, value);
+  });
   const char* previousETag = refresh::requestETag(lastDisplayed);
   const bool sentETag = allowConditional && previousETag[0] != '\0';
   if (sentETag) http.addHeader("If-None-Match", previousETag);

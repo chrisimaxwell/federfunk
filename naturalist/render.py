@@ -6,7 +6,7 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
+from PIL import Image, ImageChops, ImageDraw, ImageFont, PngImagePlugin
 import qrcode
 from schedule import DEFAULT_SCHEDULE, validate_schedule
 
@@ -14,9 +14,13 @@ ROOT = Path(__file__).resolve().parent
 COLORS = [(0, 0, 0), (255, 255, 255), (255, 255, 0),
           (255, 0, 0), (0, 0, 255), (0, 255, 0)]
 CODES = bytes([0, 1, 2, 3, 5, 6] + [1] * 250)
+DISPLAY_SATURATION = 1.30
+DISPLAY_VALUE_GAMMA = .75
+QR_INK = (20, 20, 20)
 DEFAULTS = dict(show_names=False, show_scientific=False, show_counts=False,
                 show_title=True, show_qr=True, show_all=True, scale="log", max_birds=8,
-                orientation="portrait", dashboard_url="http://localhost:8001/", variants={}, schedule=DEFAULT_SCHEDULE)
+                style="collage", classic_media="photos", orientation="portrait",
+                dashboard_url="http://localhost:8001/", variants={}, schedule=DEFAULT_SCHEDULE)
 
 
 def catalogue(directory=None):
@@ -53,6 +57,10 @@ def validate_settings(patch, current, assets):
         raise ValueError("Choose between 1 and 12 birds")
     if settings["orientation"] not in ("portrait", "landscape"):
         raise ValueError("Choose portrait or landscape")
+    if settings["style"] not in ("collage", "classic", "field_guide"):
+        raise ValueError("Choose a supported presentation style")
+    if settings["classic_media"] not in ("photos", "drawings"):
+        raise ValueError("Choose photos or historical drawings for the classic display")
     url = settings["dashboard_url"]
     if not isinstance(url, str) or len(url) > 200:
         raise ValueError("Dashboard URL must be at most 200 characters")
@@ -139,7 +147,10 @@ def compose(birds, settings, assets, artwork_dir=None):
         unit = math.sqrt(area_weight(bird["count"], settings["scale"]) / max(1, ink_area))
         items.append(dict(bird=bird, asset=asset, image=image,
                           w=image.width * unit, h=image.height * unit, weight=area_weight(bird["count"], settings["scale"])))
-    from collage import arrange
+    if settings.get("style") == "field_guide":
+        from field_guide import arrange
+    else:
+        from collage import arrange
     label_lines = int(settings["show_names"]) + int(settings["show_scientific"]) + int(settings["show_counts"])
     region = (width*.12, height*.23, width*.76, height*.64)
     for placement in arrange(items, region, label_lines):
@@ -157,41 +168,30 @@ def compose(birds, settings, assets, artwork_dir=None):
                 centered(draw, text, placement["cx"], label_y, placement["label_width"]-4,
                          max(12, label_size-2) if italic else label_size, italic)
                 label_y += line_height
-    if settings["show_qr"]:
-        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=2, border=4)
-        qr.add_data(settings["dashboard_url"])
-        qr.make(fit=True)
-        im = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-        # Integer module sizing keeps the required quiet zone and crisp edges.
-        module_count = len(qr.get_matrix())
-        factor = 2  # Smallest practical modules at the panel's pixel density.
-        im = im.resize((module_count*factor, module_count*factor), Image.Resampling.NEAREST)
-        canvas.paste(im, (width-im.width-24, height-im.height-24))
+    add_qr(canvas, settings)
     attribution = []
     for _, asset in selected:
         attribution.append({key: asset.get(key) for key in ("title", "creator", "date", "source_url", "rights", "rights_url", "attribution")})
     canvas.info["Artwork sources"] = json.dumps(attribution, ensure_ascii=False)
-    licensed = [asset for _, asset in selected if asset.get("rights", "").startswith("CC BY")]
-    if licensed:
-        lines = []
-        available_width = width - (270 if settings["show_qr"] else 110)
-        for asset in licensed:
-            credit = (f'{asset["common_name"]}: {asset.get("creator", "")} ({asset.get("date", "")}). '
-                      f'Cropped / alpha-masked. {asset["rights"]}: {asset.get("rights_url", "")} '
-                      f'Source: {asset.get("archive_url", asset["source_url"])}')
-            line = ""
-            for word in credit.split():
-                candidate = (line + " " + word).strip()
-                if line and draw.textlength(candidate, font=font(12)) > available_width:
-                    lines.append(line)
-                    line = word
-                else:
-                    line = candidate
-            if line:
-                lines.append(line)
-        for index, line in enumerate(lines):
-            draw.text((55, height-45-16*len(lines)+index*16), line, font=font(12), fill=(70, 73, 65))
+    # The QR leads to full source/artist/license credits on the dashboard.
+    # Preserve provenance in exported PNG metadata without printing a footer.
     return canvas, selected
+
+
+def add_qr(canvas, settings):
+    if settings["show_qr"]:
+        width, height = canvas.size
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=2, border=4)
+        qr.add_data(settings["dashboard_url"])
+        qr.make(fit=True)
+        im = qr.make_image(fill_color=QR_INK, back_color="white").convert("RGB")
+        # Integer module sizing keeps the required quiet zone and crisp edges.
+        module_count = len(qr.get_matrix())
+        factor = 2  # Smallest practical modules at the panel's pixel density.
+        im = im.resize((module_count*factor, module_count*factor), Image.Resampling.NEAREST)
+        origin = (width-im.width-24, height-im.height-24)
+        canvas.paste(im, origin)
+        canvas.info["QR bounds"] = (*origin, origin[0]+im.width, origin[1]+im.height)
 
 
 def png(image):
@@ -208,13 +208,63 @@ def pack(canvas):
         raise ValueError("Unsupported print dimensions")
     palette = Image.new("P", (1, 1))
     palette.putpalette([v for rgb in COLORS for v in rgb] + [255] * 750)
-    quantized = canvas.convert("RGB").quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG)
+    output = display_colors(canvas)
+    quantized = output.quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG)
+    restore_qr_finders(quantized, canvas, palette)
+    quantized.info.update(canvas.info)
     # Driver already rotates landscape to native portrait. Encode the inverse
     # rotation here so a portrait print arrives upright, without firmware edits.
     wire = quantized.transpose(Image.Transpose.ROTATE_90) if canvas.width == 1200 else quantized
     codes = wire.tobytes().translate(CODES)
     frame = bytes((codes[i] << 4) | codes[i+1] for i in range(0, len(codes), 2))
     return frame, png(quantized.convert("RGB"))
+
+
+def restore_qr_finders(quantized, canvas, palette):
+    """Protect QR locator patterns while retaining softly dithered data modules."""
+    bounds = canvas.info.get("QR bounds")
+    if not bounds:
+        return
+    original = canvas.crop(bounds).convert("L")
+    binary = original.point(lambda value: 0 if value < 128 else 255).convert("RGB")
+    binary = binary.quantize(palette=palette, dither=Image.Dither.NONE)
+    # compose() uses two-pixel modules with a four-module quiet zone.
+    # Include that border, the seven-module finder and its one-module separator.
+    span = (4 + 7 + 1) * 2
+    width, height = binary.size
+    for box in ((0, 0, span, span), (width-span, 0, width, span),
+                (0, height-span, span, height)):
+        quantized.paste(binary.crop(box), (bounds[0]+box[0], bounds[1]+box[1]))
+
+
+def display_colors(canvas):
+    """Lift colored feathers before dithering, preserving neutral ink and paper."""
+    original = canvas.convert("RGB")
+    hue, saturation, value = original.convert("HSV").split()
+    red, green, blue = original.split()
+    chroma = ImageChops.subtract(
+        ImageChops.lighter(ImageChops.lighter(red, green), blue),
+        ImageChops.darker(ImageChops.darker(red, green), blue))
+
+    def ramp(low, high):
+        return [round(255 * max(0, min(1, (i-low)/(high-low)))) for i in range(256)]
+
+    # Fade in only on discernibly colored pixels. Protect muted feathers,
+    # near-neutral lettering and deep shadows instead of lifting all blacks.
+    mask = ImageChops.multiply(saturation.point(ramp(32, 96)), chroma.point(ramp(8, 32)))
+    mask = ImageChops.multiply(mask, value.point(ramp(24, 64)))
+    boosted = Image.merge("HSV", (
+        hue,
+        saturation.point([min(255, round(i * DISPLAY_SATURATION)) for i in range(256)]),
+        value.point([round(255 * (i/255)**DISPLAY_VALUE_GAMMA) for i in range(256)]),
+    )).convert("RGB")
+    output = Image.composite(boosted, original, mask)
+    # Keep the deliberately softened QR independent of artwork adjustments.
+    if "QR bounds" in canvas.info:
+        bounds = canvas.info["QR bounds"]
+        output.paste(canvas.crop(bounds), bounds[:2])
+    output.info.update(canvas.info)
+    return output
 
 
 def etag(data):

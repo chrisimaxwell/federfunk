@@ -32,24 +32,20 @@ struct Indicator {
   bool visible;
   bool low;
   uint8_t percentage;
-  ChargeState charge;
-  constexpr Indicator(bool shown = false, bool warning = false, uint8_t percent = 0,
-                      ChargeState state = ChargeState::Unknown)
-      : visible(shown), low(warning), percentage(percent), charge(state) {}
+  constexpr Indicator(bool shown = false, bool warning = false, uint8_t percent = 0)
+      : visible(shown), low(warning), percentage(percent) {}
 };
 
 inline uint16_t key(const Indicator& indicator) {
   return indicator.visible
              ? static_cast<uint16_t>(0x100 | (indicator.low ? 0x200 : 0) |
-                                     indicator.percentage |
-                                     (static_cast<uint16_t>(indicator.charge) << 10))
+                                     indicator.percentage)
              : 0;
 }
 
 inline Indicator fromKey(uint16_t value) {
   return {(value & 0x100) != 0, (value & 0x200) != 0,
-          static_cast<uint8_t>(value & 0x7F),
-          static_cast<ChargeState>((value >> 10) & 3)};
+          static_cast<uint8_t>(value & 0x7F)};
 }
 
 inline bool validVoltage(float volts) {
@@ -82,27 +78,26 @@ float sampleVoltage(ReadMilliVolts read, float divider, float calibration) {
   return static_cast<float>(total) / (count - 2 * trim) * 0.001f * divider * calibration;
 }
 
-inline Indicator evaluate(float volts, const Indicator& previous,
-                          float threshold, float hysteresis, bool onlyWhenLow,
-                          float emptyVoltage, float fullVoltage,
-                          unsigned percentageStep) {
-  if (!validVoltage(volts)) return previous;
-  const bool low = previous.low ? volts < threshold + hysteresis
-                               : volts < threshold;
+inline uint8_t percentage(float volts, float emptyVoltage, float fullVoltage) {
   float fraction = (volts - emptyVoltage) / (fullVoltage - emptyVoltage);
   if (fraction < 0.0f) fraction = 0.0f;
   if (fraction > 1.0f) fraction = 1.0f;
-  const unsigned percent = static_cast<unsigned>(fraction * 100.0f + 0.5f);
-  unsigned rounded =
-      ((percent + percentageStep / 2) / percentageStep) * percentageStep;
-  if (rounded > 100) rounded = 100;
-  return {!onlyWhenLow || low, low, static_cast<uint8_t>(rounded)};
+  return static_cast<uint8_t>(fraction * 100.0f + 0.5f);
+}
+
+inline Indicator evaluate(float volts, const Indicator& previous,
+                          unsigned lowPercentage,
+                          float emptyVoltage, float fullVoltage) {
+  if (!validVoltage(volts)) return previous;
+  const auto percent = percentage(volts, emptyVoltage, fullVoltage);
+  const bool low = percent < lowPercentage;
+  return {low, low, percent};
 }
 
 // A deliberately small, opaque badge. Never change any pixels outside it.
 constexpr int badgeMargin = 16;
-constexpr int badgeWidth = 384;
-constexpr int badgeHeight = 56;
+constexpr int badgeWidth = 160;
+constexpr int badgeHeight = 48;
 
 inline void pixel(uint8_t* frame, int width, int height, int x, int y,
                   uint8_t code) {
@@ -144,29 +139,9 @@ inline void glyph(uint8_t* frame, int width, int height, int x, int y, char c) {
     for (int col = 0; col < 5; ++col) {
       if ((rows[index][row] & (1 << (4 - col))) != 0) {
         rectangle(frame, width, height, x + col * scale, y + row * scale,
-                  scale, scale, 0);  // Black.
+                  scale, scale, 3);  // Red low-battery percentage.
       }
     }
-  }
-}
-
-inline void chargeGlyph(uint8_t* frame, int width, int height, int x, int y, char c) {
-  // Original 5x7 uppercase glyphs used by the three charge-state labels.
-  static constexpr char letters[] = "ACGHIKNORTUW";
-  static constexpr uint8_t rows[][7] = {
-      {14,17,17,31,17,17,17}, {14,17,16,16,16,17,14},
-      {14,17,16,23,17,17,14}, {17,17,17,31,17,17,17},
-      {31,4,4,4,4,4,31}, {17,18,20,24,20,18,17},
-      {17,25,25,21,19,19,17}, {14,17,17,17,17,17,14},
-      {30,17,17,30,20,18,17}, {31,4,4,4,4,4,4},
-      {17,17,17,17,17,17,14}, {17,17,17,21,21,21,10}};
-  for (size_t index = 0; letters[index]; ++index) {
-    if (letters[index] != c) continue;
-    for (int row = 0; row < 7; ++row)
-      for (int col = 0; col < 5; ++col)
-        if (rows[index][row] & (1 << (4 - col)))
-          rectangle(frame, width, height, x + col * 2, y + row * 2, 2, 2, 0);
-    break;
   }
 }
 
@@ -176,29 +151,17 @@ inline void draw(uint8_t* frame, int width, int height, const Indicator& indicat
   const int y = height - badgeMargin - badgeHeight;
   rectangle(frame, width, height, x, y, badgeWidth, badgeHeight, 1);  // White paper.
   const int bx = x + 10;
-  const int by = y + 11;
-  const uint8_t border = indicator.low ? 3 : 0;  // Red warning / black normal.
-  const uint8_t fill = indicator.low ? 3 : 6;    // Red warning / green normal.
-  rectangle(frame, width, height, bx, by, 64, 34, border);
-  rectangle(frame, width, height, bx + 3, by + 3, 58, 28, 1);
-  rectangle(frame, width, height, bx + 64, by + 11, 6, 12, border);
+  const int by = y + 10;
+  rectangle(frame, width, height, bx, by, 48, 28, 3);
+  rectangle(frame, width, height, bx + 3, by + 3, 42, 22, 1);
+  rectangle(frame, width, height, bx + 48, by + 9, 5, 10, 3);
   rectangle(frame, width, height, bx + 6, by + 6,
-            52 * indicator.percentage / 100, 22, fill);
-  if (indicator.low) {
-    // Exclamation mark remains legible even when the fill extends underneath.
-    rectangle(frame, width, height, bx + 42, by + 5, 12, 24, 1);
-    rectangle(frame, width, height, bx + 46, by + 7, 4, 13, 3);
-    rectangle(frame, width, height, bx + 46, by + 24, 4, 4, 3);
-  }
+            36 * indicator.percentage / 100, 16, 3);
   char text[5];
   std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(indicator.percentage));
   for (size_t i = 0; text[i] != '\0'; ++i) {
-    glyph(frame, width, height, x + 92 + static_cast<int>(i) * 18, y + 18, text[i]);
+    glyph(frame, width, height, x + 78 + static_cast<int>(i) * 18, y + 14, text[i]);
   }
-  const char* charge = chargeLabel(indicator.charge);
-  for (size_t i = 0; charge[i]; ++i)
-    chargeGlyph(frame, width, height, x + 210 + static_cast<int>(i) * 12,
-                y + 21, charge[i]);
 }
 
 }  // namespace battery

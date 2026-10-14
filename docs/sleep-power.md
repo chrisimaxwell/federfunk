@@ -2,9 +2,12 @@
 
 Thomas's reported baseline is about **11.06 mA asleep**, at roughly 4.10 V
 through the battery input with USB disconnected. It is a whole-board
-measurement. The new audio shutdown code has passed host tests and both
-firmware builds, but **has not been flashed or measured on the board**. Do not
-replace that baseline with an estimated lower figure.
+measurement. On **2026-10-14**, the installed audio shutdown firmware reported
+both codecs confirmed and completed a display refresh followed by sleep.
+The revised battery-only warning and dashboard telemetry were subsequently
+prepared in source and still require their own authorized firmware upload.
+**Sleep current after audio shutdown has not yet been measured.** Do not
+replace the baseline with an estimated lower figure.
 
 ## What this change turns off
 
@@ -39,9 +42,9 @@ power-control pins.
 
 ## Hardware verification still required
 
-1. Flash the new large profile only when a hardware test is authorized. Capture
-   the normal refresh log and `Audio shutdown: ES8311 confirmed; ES7210
-   confirmed.` Check the image remains intact in sleep.
+1. The 2026-10-14 large-profile test captured `Audio shutdown: ES8311 confirmed;
+   ES7210 confirmed.` and a completed refresh/sleep cycle. Repeat log and image
+   verification after later firmware changes, uploading only when authorized.
 2. Repeat Thomas's battery-input measurement at the same supply voltage, with
    USB fully disconnected and the same SD-card/accessory state. Wait at least
    60 seconds after entering sleep; record mean/min/max over a steady interval.
@@ -63,7 +66,7 @@ power-control pins.
 | Measurement | Battery voltage | SD/accessories | Sleep current | Notes |
 | --- | --- | --- | --- | --- |
 | Reported prior baseline | ~4.10 V | Record original setup | ~11.06 mA | USB disconnected |
-| New code, cold boot | Pending | Pending | Pending | Both codecs confirmed? |
+| Audio shutdown, observed boot | Not recorded | Not recorded | Pending | Both codecs confirmed; refresh then sleep on 2026-10-14 |
 | New code, timer wake | Pending | Same | Pending | Image unchanged |
 | New code, network failure | Pending | Same | Pending | Reaches sleep |
 | Audio-cleanup-disabled A/B | Pending | Same | Pending | Full power cycle first |

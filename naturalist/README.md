@@ -38,7 +38,25 @@ the ESP32 or change BirdNET-Go.
 
 ## Picture controls
 
-The dashboard saves names, scientific names, counts, title, QR URL, maximum
+Choose a presentation in the dashboard:
+
+- **Naturalist collage** (default): historical drawings arranged by silhouette,
+  with frequency-based sizing and all illustrated species heard today.
+- **Classic display**: the previous local feed's featured bird and daily summary,
+  adapted to portrait or landscape. Photos are the default; Historical drawings
+  uses the reviewed catalogue for the same featured species. Names and counts
+  remain optional. The daily list includes all birds unless a limit is selected.
+- **Field guide**: historical drawings in ordered rows, retaining frequency
+  sizing and optional labels.
+
+Classic is based on the earlier local BirdNET adapter. Thomas's published
+FederFunk repository supplies firmware, not the original server-side renderer;
+this option does not claim to reproduce an unpublished renderer. Photos come
+from BirdNET-Go's species image API, with its author and license attribution.
+Missing drawings never cause another species to be substituted. A failed photo
+request preserves the last successful print and settings.
+
+The dashboard saves presentation, classic photo/drawing choice, names, scientific names, counts, title, QR URL, maximum
 birds, orientation, sizing, the daylight schedule, and illustration choices. Settings,
 stats and all three image representations are committed as one atomic bundle.
 Changes appear on the web after saving; the frame receives them on its normal
@@ -46,7 +64,9 @@ next wake, approximately every 30 minutes. A QR URL must be reachable by the
 phone scanning it; localhost is usually not suitable. The QR is on by default in the bottom-right corner, with two-pixel modules
 and the required four-module white border. Set `DASHBOARD_URL` or
 `--dashboard-url` to the station’s LAN address; the generic development
-default is localhost. Physical scanning still needs a phone check.
+default is localhost. Slightly softened dark modules keep the code discreet;
+solid corner markers preserve scan reliability after dithering. Physical
+scanning still needs a phone check when changing the QR size or contrast.
 
 The three area scales are:
 
@@ -108,6 +128,11 @@ species identification, provenance and rights information when extending the
 collection. The manifest is checked on service startup; restart after adding
 assets. Unknown or mismatched variant IDs cannot be saved.
 
+Source records, artists, dates and rights stay on the dashboard with clickable
+archive, original-scan and license links. They are also embedded in exported
+PNG metadata. No credits or references are printed on the e-paper artwork;
+its QR code leads to the dashboard's full attribution.
+
 The dashboard's image library compares the entire BirdNET species history
 with exact scientific-name matches, shows every reviewed drawing, and lists
 missing illustrations in detection-count order. Coverage counts all reported
@@ -130,7 +155,7 @@ additional exact-species variants can be added to the same catalogue.
 | `/art.png` | Full-color artwork, portrait by default |
 | `/preview.png` | Same composition quantized to the six display colors |
 | `/api/v1/display/current_large.bin` | Existing 960,000-byte firmware endpoint |
-| `/api/state` | Settings, observations, availability, last poll and errors |
+| `/api/state` | Settings, observations, availability, frame battery, last poll and errors |
 | `/api/settings` | Settings and CSRF token; POST applies validated changes |
 | `/api/library` | All-history coverage, missing species and review records |
 | `/credits` | Artwork sources and rights metadata |
@@ -140,13 +165,22 @@ Portrait art is 1200×1600. The wire image remains 1600×1200, high nibble first
 using only codes 0,1,2,3,5,6. The server rotates portrait art counterclockwise
 once to cancel the driver's existing clockwise address rotation. Tests check
 native corners and controller seam pixels. Do not change the driver rotation.
-The panel's physical portrait orientation still needs visual confirmation.
+The installed panel's upright portrait orientation was confirmed by its owner.
 
-The firmware adds its battery badge after download; that badge is not in the
-web preview. With the existing landscape badge settings it becomes a sideways
-strip at the portrait upper-left edge. The print reserves that edge. Changing
-or hiding that local badge requires a firmware configuration change, not a
-dashboard toggle. Actual e-paper colors differ from screen colors.
+The firmware adds a small red battery warning only below 15%; that badge is
+not in the web preview. The existing landscape badge placement maps to the
+portrait upper-left edge, which the print reserves. Charging never appears
+on the artwork. Updated firmware reports battery percentage, voltage and
+charging state with its existing image request; the dashboard shows when
+those readings were last received, with no additional frame wakeups. Older
+firmware supplies no battery readings. Percentages are voltage estimates.
+
+E-paper output lifts brightness and saturation in colored feathers before
+six-color dithering, reducing black in colored areas. Near-neutral details,
+white paper and the QR code retain their original tones.
+Source scans and full-color web art stay unchanged; the six-color preview
+shows the boosted output. Actual e-paper pigments still differ from screen
+colors, so final color judgment needs the physical panel.
 
 The 7.3-inch firmware remains supported by the parent project, but this
 companion's output currently targets only the 13.3-inch display.

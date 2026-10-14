@@ -17,7 +17,7 @@ python3 -c 'import render; print("Verified", len(render.catalogue()), "illustrat
 install -d -m 755 /opt/federfunk-feed/releases
 release_dir="$(mktemp -d /opt/federfunk-feed/releases/naturalist.XXXXXX)"
 chmod 755 "$release_dir"
-install -m 644 server.py render.py collage.py schedule.py audit_library.py demo.json "$release_dir/"
+install -m 644 server.py render.py collage.py field_guide.py classic.py schedule.py audit_library.py demo.json "$release_dir/"
 cp -R artwork web "$release_dir/"
 chmod -R a+rX "$release_dir"
 backup_dir="$(mktemp -d /opt/federfunk-feed/backup-naturalist.XXXXXX)"

@@ -3,11 +3,14 @@
  */
 #include "BatteryConfig.h"
 #include "BatteryIndicator.h"
+#include "BatteryTelemetry.h"
 #include "RefreshState.h"
 #include <array>
 #include <cassert>
 #include <fstream>
 #include <limits>
+#include <map>
+#include <string>
 #include <vector>
 
 uint8_t getPixel(const std::vector<uint8_t>& frame, int width, int x, int y) {
@@ -15,9 +18,12 @@ uint8_t getPixel(const std::vector<uint8_t>& frame, int width, int x, int y) {
   return (x & 1) == 0 ? byte >> 4 : byte & 0x0F;
 }
 
-battery::Indicator evaluate(float volts, battery::Indicator previous = {},
-                            bool onlyWhenLow = true) {
-  return battery::evaluate(volts, previous, 3.5f, 0.1f, onlyWhenLow, 3.3f, 4.2f, 5);
+battery::Indicator evaluate(float volts, battery::Indicator previous = {}) {
+  return battery::evaluate(volts, previous, 15, 3.3f, 4.2f);
+}
+
+float voltageForPercent(unsigned percentage) {
+  return 3.3f + 0.009f * percentage;
 }
 
 int main(int argc, char** argv) {
@@ -29,44 +35,39 @@ int main(int argc, char** argv) {
   assert(battery::classifyCharge(8, 8, true, true) == ChargeState::Unknown);
   assert(battery::classifyCharge(32, 32, false, true) == ChargeState::Unknown);
   assert(battery::classifyCharge(32, 32, true, false) == ChargeState::Unknown);
-  battery::Indicator charging{true, false, 95, ChargeState::Charging};
-  battery::Indicator idle{true, false, 95, ChargeState::NotCharging};
-  assert(battery::key(charging) != battery::key(idle));
-  for (auto charge : {ChargeState::Unknown, ChargeState::Charging, ChargeState::NotCharging}) {
-    battery::Indicator reading{true, false, 95, charge};
-    const auto restored = battery::fromKey(battery::key(reading));
-    assert(restored.charge == charge && restored.percentage == 95);
-  }
-  // Strict threshold, hysteresis, and invalid/disconnected sensor readings.
+  // Strict percentage threshold: no hysteresis may leave a warning at15%.
   auto healthy = evaluate(3.5f);
   assert(!healthy.low && !healthy.visible && battery::key(healthy) == 0);
-  auto low = evaluate(3.49f, healthy);
+  auto low = evaluate(voltageForPercent(14), healthy);
   assert(low.low && low.visible);
-  assert(evaluate(3.50f, low).low);
-  assert(evaluate(3.59f, low).low);
-  auto recovered = evaluate(3.60f, low);
+  assert(low.percentage == 14);
+  auto recovered = evaluate(voltageForPercent(15), low);
   assert(!recovered.low && !recovered.visible);
   assert(battery::key(recovered) == 0);
-  assert(evaluate(3.55f, recovered).visible == false);
+  for (unsigned percent = 0; percent <= 100; ++percent) {
+    const auto state = evaluate(voltageForPercent(percent), low);
+    assert(state.percentage == percent);
+    assert(state.visible == (percent < 15));
+    assert(state.low == (percent < 15));
+    if (percent >= 15) assert(battery::key(state) == 0);
+  }
   for (float bad : {0.0f, -1.0f, 2.49f, 4.51f,
                     std::numeric_limits<float>::infinity(),
                     std::numeric_limits<float>::quiet_NaN()}) {
     assert(battery::key(evaluate(bad, low)) == battery::key(low));
     assert(battery::key(evaluate(bad, healthy)) == 0);
   }
-  assert(evaluate(2.5f, {}, false).percentage == 0);
-  assert(evaluate(3.3f, {}, false).percentage == 0);
-  assert(evaluate(4.2f, {}, false).percentage == 100);
-  assert(evaluate(4.5f, {}, false).percentage == 100);
-  assert(evaluate(3.75f, {}, false).percentage == 50);
-  assert(evaluate(3.74f, {}, false).percentage == 50);
-  assert(evaluate(3.76f, {}, false).percentage == 50);
-  assert(evaluate(3.70f, {}, false).visible);
-  const auto changedThreshold = battery::evaluate(3.65f, {}, 3.7f, 0.1f, true,
-                                                 3.3f, 4.2f, 5);
+  assert(evaluate(2.5f).percentage == 0);
+  assert(evaluate(3.3f).percentage == 0);
+  assert(evaluate(4.2f).percentage == 100);
+  assert(evaluate(4.5f).percentage == 100);
+  assert(evaluate(3.75f).percentage == 50);
+  assert(evaluate(3.74f).percentage == 49);
+  assert(evaluate(3.76f).percentage == 51);
+  assert(!evaluate(3.70f).visible);
+  const auto changedThreshold = battery::evaluate(3.65f, {}, 40, 3.3f, 4.2f);
   assert(changedThreshold.low && changedThreshold.visible);
-  for (const auto indicator : {low, healthy, evaluate(3.75f, {}, false),
-                               evaluate(4.2f, {}, false)}) {
+  for (const auto indicator : {low, healthy, evaluate(3.75f), evaluate(4.2f)}) {
     assert(battery::key(battery::fromKey(battery::key(indicator))) == battery::key(indicator));
   }
 
@@ -116,6 +117,7 @@ int main(int argc, char** argv) {
                           y >= top && y < top + battery::badgeHeight;
       if (!inside) assert(pixel == getPixel(source, width, x, y));
       else {
+        assert(pixel == 1 || pixel == 3);  // Only red ink on white paper.
         redPixels += pixel == 3;
         whitePixels += pixel == 1;
       }
@@ -163,25 +165,47 @@ int main(int argc, char** argv) {
   refresh::invalidate(state);
   assert(!refresh::matchesSource(state, changedUnderBadge));
   assert(refresh::overlayChanged(state, battery::key(low)));
-  refresh::remember(state, context, composite, "\"same-bird\"", base, battery::key(charging));
-  assert(!refresh::overlayChanged(state, battery::key(charging)));
-  assert(refresh::overlayChanged(state, battery::key(idle)));
-  auto chargingPixels = source;
-  auto idlePixels = source;
-  battery::draw(chargingPixels.data(), width, height, charging);
-  battery::draw(idlePixels.data(), width, height, idle);
-  assert(chargingPixels != idlePixels);
+  // Telemetry carries charge state; the frame key and pixels never do.
+  refresh::remember(state, context, composite, "\"same-bird\"", base, battery::key(low));
+  const std::vector<uint8_t> warningPixels = frame;
+  for (auto charge : {ChargeState::Unknown, ChargeState::Charging, ChargeState::NotCharging}) {
+    std::map<std::string, std::string> headers;
+    battery::Telemetry reading{4.16f, 96, charge};
+    auto add = [&headers](const char* name, const char* value) { headers[name] = value; };
+    assert(battery::addTelemetryHeaders(reading, add));
+    assert(headers.size() == 3);
+    assert(headers.at("X-FederFunk-Battery-Percent") == "96");
+    assert(headers.at("X-FederFunk-Battery-Voltage") == "4.16");
+    assert(headers.at("X-FederFunk-Charging") == battery::chargeHeader(charge));
+    assert(!refresh::overlayChanged(state, battery::key(low)));
+    auto unchanged = source;
+    battery::draw(unchanged.data(), width, height, low);
+    assert(unchanged == warningPixels);
+  }
+  for (float invalid : {0.0f, 2.49f, 4.51f, std::numeric_limits<float>::quiet_NaN()}) {
+    unsigned calls = 0;
+    assert(!battery::addTelemetryHeaders({invalid, 10, ChargeState::Unknown},
+                                        [&calls](const char*, const char*) { ++calls; }));
+    assert(calls == 0);
+  }
+  unsigned calls = 0;
+  assert(!battery::addTelemetryHeaders({4.0f, 101, ChargeState::Charging},
+                                      [&calls](const char*, const char*) { ++calls; }));
+  assert(calls == 0);
+  assert(std::string(battery::chargeHeader(ChargeState::Charging)) == "charging");
+  assert(std::string(battery::chargeHeader(ChargeState::NotCharging)) == "not_charging");
+  assert(std::string(battery::chargeHeader(ChargeState::Unknown)) == "unknown");
 
   // Optional visual QA output, created entirely by the firmware drawing code.
   if (argc == 2) {
     std::vector<uint8_t> preview(width * height / 2, 0x11);
-    battery::draw(preview.data(), width, height / 3, charging);
-    battery::draw(preview.data(), width, height * 2 / 3, idle);
-    battery::draw(preview.data(), width, height, {true, true, 20, ChargeState::Unknown});
+    battery::draw(preview.data(), width, height / 3, evaluate(voltageForPercent(14)));
+    battery::draw(preview.data(), width, height * 2 / 3, evaluate(voltageForPercent(5)));
+    battery::draw(preview.data(), width, height, evaluate(voltageForPercent(0)));
     std::ofstream output(argv[1], std::ios::binary);
     output.write(reinterpret_cast<const char*>(preview.data()), preview.size());
     assert(output.good());
   }
-  puts("PASS: threshold/hysteresis, sampling/calibration, percentage rounding, "
-       "badge bounds/color codes, cache restoration, and 304 overlay updates verified.");
+  puts("PASS: strict percentage threshold, sampling/calibration, red badge bounds, "
+       "charge-only telemetry, cache restoration, and 304 overlay updates verified.");
 }

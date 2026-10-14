@@ -9,12 +9,13 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import tempfile
 import threading
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -26,6 +27,74 @@ from audit_library import audit_history
 
 LOG = logging.getLogger("federfunk-naturalist")
 ROOT = Path(__file__).resolve().parent
+DEVICE_STALE_SECONDS = 75 * 60  # Two normal 30-minute frame wakes, plus a margin.
+
+
+def battery_headers(headers):
+    """Allowlist small optional readings; bad metadata never blocks a print."""
+    readings = {}
+    for field, header in (("battery_percent", "X-FederFunk-Battery-Percent"),
+                          ("battery_voltage", "X-FederFunk-Battery-Voltage"),
+                          ("charging", "X-FederFunk-Charging")):
+        values = headers.get_all(header, []) if hasattr(headers, "get_all") else [headers.get(header)]
+        if len(values) != 1 or not isinstance(values[0], str) or len(values[0]) > 32:
+            continue
+        value = values[0].strip()
+        if field == "battery_percent" and re.fullmatch(r"(?:0|[1-9][0-9]?|100)", value):
+            readings[field] = int(value)
+        elif field == "battery_voltage" and re.fullmatch(r"[0-9](?:\.[0-9]{1,4})?", value):
+            voltage = float(value)
+            if 2.5 <= voltage <= 4.5:
+                readings[field] = voltage
+        elif field == "charging" and value in ("charging", "not_charging", "unknown"):
+            readings[field] = value
+    return readings
+
+
+def save_device(directory, device):
+    directory.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix="device-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(handle, "w") as output:
+            json.dump(device, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, directory / "device.json")
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def load_device(directory):
+    empty = dict(battery_percent=None, battery_voltage=None, charging="unknown", last_seen=None, reported_at=None)
+    try:
+        with (directory / "device.json").open() as source:
+            encoded = source.read(4097)
+        if len(encoded) > 4096:
+            return empty
+        saved = json.loads(encoded)
+        if not isinstance(saved, dict):
+            return empty
+        result = dict(empty)
+        for key in ("last_seen", "reported_at"):
+            value = saved.get(key)
+            if value is not None:
+                stamp = datetime.fromisoformat(value)
+                if stamp.tzinfo is None or stamp.timestamp() > time.time() + 300:
+                    return empty
+                result[key] = stamp.astimezone(timezone.utc).isoformat()
+        percent, voltage = saved.get("battery_percent"), saved.get("battery_voltage")
+        if type(percent) is int and 0 <= percent <= 100:
+            result["battery_percent"] = percent
+        if type(voltage) in (int, float) and math.isfinite(voltage) and 2.5 <= voltage <= 4.5:
+            result["battery_voltage"] = voltage
+        if saved.get("charging") in ("charging", "not_charging", "unknown"):
+            result["charging"] = saved["charging"]
+        if result["reported_at"] is None:
+            return {**empty, "last_seen": result["last_seen"]}
+        return result
+    except (OSError, ValueError, TypeError, OverflowError):
+        return empty
 
 
 def clean(value, limit=180):
@@ -116,6 +185,7 @@ class Feed:
         self.artwork_dir = artwork_dir or ROOT / "artwork"
         self.lock = threading.RLock()
         self.refresh_lock = threading.Lock()
+        self.device = load_device(directory)
         initial = {"schedule": {"timezone": timezone}}
         if dashboard_url is not None:
             initial["dashboard_url"] = dashboard_url
@@ -127,6 +197,13 @@ class Feed:
             self.bundle = None  # Never serve sample observations as live detections.
         try:
             self.settings = render.validate_settings({}, self.bundle["state"]["settings"] if self.bundle else initial, self.assets)
+            if self.bundle:
+                # Adding defaults is a schema migration, not a queued edit.
+                # Normalize displayed settings separately so overnight edits
+                # remain pending until their first active-window render.
+                self.bundle["state"]["settings"] = self.settings
+                self.bundle["state"]["display_settings"] = render.validate_settings(
+                    {}, self.bundle["state"]["display_settings"], self.assets)
         except (ValueError, TypeError, KeyError):
             self.bundle = None  # Recover from an incompatible/deleted artwork selection.
             self.settings = initial
@@ -165,27 +242,76 @@ class Feed:
     def state(self):
         with self.lock:
             current = dict(self.bundle["state"]) if self.bundle else {"settings": self.settings, "stats": None, "revision": None}
+            schedule = self.schedule()
+            reported = self.device["reported_at"]
+            stale = bool(reported and time.time() - datetime.fromisoformat(reported).timestamp() > DEVICE_STALE_SECONDS)
             return {**current, "artworks": self.assets, "error": self.error,
                     "last_success": self.last_success, "demo": self.demo,
-                    "schedule": self.schedule(),
+                    "schedule": schedule,
+                    "device": {**self.device, "stale": stale, "resting": not schedule["active"]},
                     "pending_settings": bool(self.bundle and self.settings != self.bundle["state"].get("display_settings", self.settings))}
+
+    def record_device(self, headers):
+        readings = battery_headers(headers)
+        with self.lock:
+            now = datetime.now(timezone.utc).isoformat()
+            device = {**self.device, "last_seen": now}
+            if readings:
+                # Never present an omitted measurement as part of a new report.
+                device.update(battery_percent=None, battery_voltage=None, charging="unknown", reported_at=now)
+                device.update(readings)
+            # Retain readings across a request from older firmware or a device
+            # that cannot measure its battery; reported_at remains unchanged.
+            self.device = device
+            try:
+                save_device(self.directory, device)
+            except OSError:
+                LOG.warning("Could not persist frame status; continuing the image request")
 
     def schedule(self):
         return schedule_state(self.settings["schedule"], datetime.now(self.timezone))
 
     def build(self, birds, date, settings, observed_at, observation_timezone=None):
-        canvas, selected = render.compose(birds, settings, self.assets, self.artwork_dir)
+        photo_credits = []
+        displayed = set()
+        if settings.get("style") == "classic":
+            import classic
+            from PIL import Image
+            eligible = [bird for bird in birds if bird["count"] > 0]
+            featured = max(eligible, key=lambda bird: (bird.get("latest_heard", ""), bird["count"], bird["scientific_name"])) if eligible else None
+            picture, credit, selected = None, {}, []
+            if featured:
+                if settings.get("classic_media", "photos") == "drawings":
+                    selected = render.choose_birds([featured], settings, self.assets)
+                    if selected:
+                        credit = dict(selected[0][1])
+                        with Image.open(self.artwork_dir / credit["file"]) as source:
+                            picture = source.convert("RGBA")
+                elif not self.demo:
+                    picture, credit = classic.photo(self.base, featured["scientific_name"])
+                    credit = {**credit, "common_name": featured["common_name"],
+                              "scientific_name": featured["scientific_name"]}
+                # Demo mode never substitutes a drawing for a requested photograph.
+                if picture is not None:
+                    displayed.add(featured["scientific_name"])
+                    photo_credits = [credit]
+            canvas = classic.compose(birds, settings, picture, credit, date, featured)
+            render.add_qr(canvas, settings)
+        else:
+            canvas, selected = render.compose(birds, settings, self.assets, self.artwork_dir)
+            displayed = {bird["scientific_name"] for bird, _ in selected}
         frame, preview = render.pack(canvas)
         selected_ids = {b["scientific_name"]: a["id"] for b, a in selected}
         available = {a["scientific_name"] for a in self.assets}
         stats = dict(date=date, species=[{**b, "artwork_id": selected_ids.get(b["scientific_name"]),
-                                         "illustrated": b["scientific_name"] in selected_ids,
+                                         "illustrated": b["scientific_name"] in displayed,
+                                         "displayed": b["scientific_name"] in displayed,
                                          "artwork_available": b["scientific_name"] in available} for b in birds],
                      total_detections=sum(b["count"] for b in birds), species_count=len(birds),
-                     illustrated_count=len(selected), confidence_threshold=self.threshold,
+                     illustrated_count=len(displayed), confidence_threshold=self.threshold,
                      observed_at=observed_at,
                      timezone=observation_timezone or settings["schedule"]["timezone"])
-        state = dict(settings=settings, display_settings=settings, stats=stats,
+        state = dict(settings=settings, display_settings=settings, stats=stats, photo_credits=photo_credits,
                      revision=hashlib.sha256(frame).hexdigest(), demo=self.demo)
         return dict(frame=frame, preview=preview, art=render.png(canvas), state=state)
 
@@ -344,10 +470,16 @@ def handler_for(feed):
                            "frameBytes": len(bundle["frame"]) if bundle else 0,
                            "etag": render.etag(bundle["frame"]) if bundle else None}, head)
             elif path == "/credits":
-                self.json(200, {"assets": feed.assets}, head)
+                self.json(200, {"assets": feed.assets,
+                                "photo_credits": bundle["state"].get("photo_credits", []) if bundle else []}, head)
             elif path in ("/api/v1/display/current_large.bin", "/preview.png", "/art.png"):
                 hold = 0
                 if path == "/api/v1/display/current_large.bin":
+                    # Both deployed Arduino HTTPClient versions send this
+                    # signature, including firmware without battery headers.
+                    # Downloads and readiness probes are not frame check-ins.
+                    if not head and self.headers.get_all("User-Agent", []) == ["ESP32HTTPClient"]:
+                        feed.record_device(self.headers)
                     try:
                         bundle, hold = feed.frame_for_display()
                     except Exception as exc:

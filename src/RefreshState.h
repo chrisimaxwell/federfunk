@@ -9,7 +9,7 @@ namespace refresh {
 
 constexpr size_t digestBytes = 32;
 constexpr size_t etagCapacity = 256;
-constexpr uint32_t stateVersion = 0x46465203;  // "FFR", version 3 (charge status).
+constexpr uint32_t stateVersion = 0x46465204;  // "FFR", version 4 (low-only badge).
 using Digest = std::array<uint8_t, digestBytes>;
 
 // Plain data with no constructor: safe to retain in RTC memory across sleep.

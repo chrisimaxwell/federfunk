@@ -151,15 +151,16 @@ so partial failures can't cause a false skip. Never trust a downloaded file
 or an unsolicited 304 as evidence that a frame was displayed successfully.
 
 The local battery badge is an explicit exception to preserving the raw frame:
-change only its bottom-left 384x56 pixel rectangle (expanded locally for the
-owner-requested charging-status text). Preserve the original
+change only its bottom-left 160x48 pixel rectangle. Show a red icon and percent
+only below 15%; charging state belongs in dashboard telemetry and must not
+affect refresh fingerprints. Preserve the original
 source in LittleFS; never cache the overlaid frame as the source or erase a
 warning to white. Compare final pixels for refresh decisions, but keep a
 separate source fingerprint to validate cache reuse. An HTTP 304 skips refresh
 only if the local badge is unchanged. A badge transition can refresh the
 verified cached source, even during network failure; missing/corrupt cache
 requires an unconditional download, not guessing the background. Preserve
-normal failure status and sleep. Test thresholds, hysteresis, invalid ADC
+normal failure status and sleep. Test the 15% boundary, invalid ADC
 readings, badge bounds, cache restoration, and unchanged-source overlay changes.
 
 For a code change affecting shared firmware, build both environments. Build

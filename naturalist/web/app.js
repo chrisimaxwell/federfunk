@@ -12,7 +12,7 @@
   const defaults = {
     show_names: false, show_scientific: false, show_counts: false,
     show_title: true, show_qr: true, show_all: true, scale: "log", max_birds: 8,
-    orientation: "portrait", dashboard_url: "", variants: {},
+    style: "collage", classic_media: "photos", orientation: "portrait", dashboard_url: "", variants: {},
   };
   let currentState = null;
   let draft = { ...defaults, variants: {}, schedule: scheduleSettings() };
@@ -99,8 +99,36 @@
   function safeUrl(value) {
     try {
       const url = new URL(value);
-      return ["https:", "http:"].includes(url.protocol) ? url.href : null;
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
     } catch { return null; }
+  }
+
+  function renderDevice(state) {
+    const device = state.device || {};
+    const percentage = device.battery_percent;
+    const voltage = device.battery_voltage;
+    const validPercent = Number.isInteger(percentage) && percentage >= 0 && percentage <= 100;
+    const validVoltage = typeof voltage === "number" && Number.isFinite(voltage) && voltage >= 2.5 && voltage <= 4.5;
+    const reported = dateValue(device.reported_at);
+    const seen = dateValue(device.last_seen);
+    const resting = device.resting === true;
+    const stale = device.stale === true;
+    const zone = state.settings?.schedule?.timezone || "America/Denver";
+    const stamp = (value) => {
+      try { return value.toLocaleString([], { timeZone: zone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
+      catch { return value.toLocaleString(); }
+    };
+    byId("device-percent").textContent = validPercent ? `${percentage}%` : "—";
+    byId("device-charging").textContent = device.charging === "charging" ? "Charging at last report"
+      : device.charging === "not_charging" ? "Not charging at last report" : "Charging status unavailable";
+    byId("device-voltage").hidden = !validVoltage;
+    byId("device-voltage").textContent = validVoltage ? `${voltage.toFixed(2)} V` : "";
+    byId("device-status").textContent = !reported ? "No battery reading" : resting ? "Overnight rest" : stale ? "Reading may be out of date" : "Last reported";
+    byId("device-heading").closest("section").classList.toggle("stale", stale && !resting);
+    byId("device-reported").textContent = reported ? `Battery last reported ${stamp(reported)} · ${zone}.`
+      : "No battery reading has been received yet.";
+    byId("device-seen").hidden = !seen || (reported && seen.getTime() === reported.getTime());
+    byId("device-seen").textContent = seen ? `Frame last checked in ${stamp(seen)} · ${zone}.` : "";
   }
 
   async function request(url, options = {}) {
@@ -130,6 +158,19 @@
   }
 
   function updateFormHelp() {
+    const presentations = {
+      collage: "An open arrangement of historical drawings, with room to breathe.",
+      classic: "A featured bird and a summary of the day’s detections.",
+      field_guide: "Historical drawings in a field-guide arrangement, with optional labels.",
+    };
+    byId("style-help").textContent = presentations[draft.style] || presentations.collage;
+    const classic = draft.style === "classic";
+    byId("classic-media-field").hidden = !classic;
+    byId("classic_media").disabled = !classic;
+    byId("scale").disabled = classic;
+    byId("scale").closest(".field").hidden = classic;
+    byId("variant-section").hidden = classic || !byId("variant-fields").children.length;
+    for (const select of byId("variant-fields").querySelectorAll("select")) select.disabled = classic;
     byId("qr-settings").hidden = !draft.show_qr;
     byId("dashboard_url").required = draft.show_qr;
     byId("max-birds-value").value = draft.max_birds;
@@ -157,6 +198,8 @@
 
   function readForm() {
     for (const name of booleans) draft[name] = byId(name).checked;
+    draft.style = byId("style").value;
+    draft.classic_media = byId("classic_media").value;
     draft.scale = byId("scale").value;
     draft.orientation = byId("orientation").value;
     draft.max_birds = Number(byId("max_birds").value);
@@ -182,7 +225,7 @@
   function fillForm(settings) {
     draft = { ...defaults, ...settings, variants: { ...(settings?.variants || {}) }, schedule: scheduleSettings(settings?.schedule) };
     for (const name of booleans) byId(name).checked = Boolean(draft[name]);
-    for (const name of ["scale", "orientation", "max_birds", "dashboard_url"]) byId(name).value = draft[name];
+    for (const name of ["style", "classic_media", "scale", "orientation", "max_birds", "dashboard_url"]) byId(name).value = draft[name];
     byId("schedule_enabled").checked = Boolean(draft.schedule.enabled);
     for (const field of ["timezone", "latitude", "longitude"]) byId(`schedule_${field}`).value = draft.schedule[field];
     for (const boundary of ["start", "end"]) {
@@ -202,6 +245,9 @@
   function artworkTitle(artwork) {
     return artwork.title || artwork.label || [artwork.common_name || artwork.scientific_name, artwork.creator, artwork.date].filter(Boolean).join(" · ") || artworkId(artwork);
   }
+
+  function displaySettings(state) { return state.display_settings || state.settings || {}; }
+  function displayStyle(state) { return displaySettings(state).style || "collage"; }
 
   function renderVariants(state) {
     const container = byId("variant-fields");
@@ -226,10 +272,11 @@
         select.append(option);
       }
       select.value = draft.variants[species.scientific_name] || "";
+      select.disabled = draft.style === "classic";
       field.append(label, select);
       container.append(field);
     }
-    byId("variant-section").hidden = !container.children.length;
+    byId("variant-section").hidden = draft.style === "classic" || !container.children.length;
   }
 
   function hourlyValues(species) {
@@ -275,7 +322,7 @@
     chart.setAttribute("aria-label", `Hourly detections: ${accessible.length ? accessible.join("; ") : "none"}.`);
   }
 
-  function renderSpecies(species) {
+  function renderSpecies(species, state) {
     const container = byId("species-list");
     const expanded = new Set(Array.from(container.querySelectorAll("details[open]"), (item) => item.dataset.species));
     container.replaceChildren();
@@ -301,8 +348,12 @@
         const confidence = Number(bird.max_confidence);
         if (Number.isFinite(confidence)) meta.append(node("span", "", `Best confidence ${Math.round(confidence <= 1 ? confidence * 100 : confidence)}%`));
       }
-      if (bird.artwork_available === false) meta.append(node("span", "missing-art", "No illustration in the library yet."));
-      else if (bird.illustrated === false) meta.append(node("span", "", "Not included in the current picture."));
+      if (displayStyle(state) !== "classic") {
+        if (bird.artwork_available === false) meta.append(node("span", "missing-art", "No illustration in the library yet."));
+        else if (bird.illustrated === false) meta.append(node("span", "", "Not included in the current picture."));
+      } else if (displaySettings(state).classic_media === "drawings" && bird.displayed === true && bird.artwork_available === false) {
+        meta.append(node("span", "missing-art", "No illustration for the featured bird in the library yet."));
+      }
       const bar = node("div", "species-frequency");
       bar.setAttribute("aria-hidden", "true");
       const fill = node("span");
@@ -317,14 +368,43 @@
     const container = byId("artwork-credits");
     container.replaceChildren();
     const used = new Set((state.stats?.species || []).map((bird) => bird.artwork_id).filter(Boolean));
-    for (const artwork of catalogue(state).filter((item) => used.has(artworkId(item)))) {
+    const classic = displayStyle(state) === "classic";
+    const photos = classic && displaySettings(state).classic_media !== "drawings";
+    const credits = classic ? (Array.isArray(state.photo_credits) ? state.photo_credits : [])
+      : catalogue(state).filter((item) => used.has(artworkId(item)));
+    byId("sources-heading").textContent = photos ? "Behind the photograph" : "From the naturalist’s library";
+    byId("sources-heading").append(node("span", "muted", photos ? "Photo credits & sources" : "Illustration credits & sources"));
+    byId("credits-description").textContent = photos
+      ? "Sources, attribution and image changes for the photograph shown on the frame."
+      : "Historical illustrations, collected with their original sources. Credits apply to the drawings in this collection.";
+    for (const artwork of credits) {
       const item = node("li");
       const source = safeUrl(artwork.source_url || artwork.source || artwork.url);
-      const title = node(source ? "a" : "span", "credit-title", artworkTitle(artwork));
+      const name = artwork.common_name || artwork.scientific_name || (photos ? "Bird photograph" : "Bird illustration");
+      const title = node(source ? "a" : "span", "credit-title", `${name} · ${artworkTitle(artwork)}`);
       if (source) { title.href = source; title.target = "_blank"; title.rel = "noopener noreferrer"; }
-      const details = [artwork.artist || artwork.creator, artwork.year || artwork.date, artwork.license || artwork.rights].filter(Boolean).join(" · ");
+      const details = [artwork.artist || artwork.creator, artwork.year || artwork.date, artwork.license || artwork.rights,
+        photos ? artwork.source_provider : null].filter(Boolean).join(" · ");
       item.append(title);
       if (details) item.append(node("span", "credit-note", details));
+      if (typeof artwork.attribution === "string" && artwork.attribution) item.append(node("span", "credit-note", artwork.attribution));
+      if (typeof artwork.changes === "string" && artwork.changes) item.append(node("span", "credit-note", `Image changes: ${artwork.changes}`));
+      const links = node("div", "credit-links");
+      const included = new Set();
+      for (const [label, value] of [["Source record", source], ["Archive", artwork.archive_url],
+        ["Photographer", photos ? artwork.author_url : null],
+        [photos ? "Original photo" : "Original scan", artwork.original_image_url || artwork.image_url], ["Rights & license", artwork.rights_url || artwork.license_url]]) {
+        const href = safeUrl(value);
+        if (!href || included.has(href)) continue;
+        included.add(href);
+        const link = node("a", "", label);
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.setAttribute("aria-label", `${label} for ${name}`);
+        links.append(link);
+      }
+      if (links.children.length) item.append(links);
       container.append(item);
     }
     byId("sources-section").hidden = !container.children.length;
@@ -335,13 +415,19 @@
     const key = `${imageMode}-${revision}`;
     byId("art-mode").setAttribute("aria-pressed", String(imageMode === "art"));
     byId("paper-mode").setAttribute("aria-pressed", String(imageMode === "paper"));
+    const classic = displayStyle(state) === "classic";
+    const photos = classic && displaySettings(state).classic_media !== "drawings";
+    byId("art-mode").textContent = photos ? "Photo" : "Artwork";
+    byId("picture").alt = classic ? `A featured bird ${photos ? "photograph" : "drawing"} and the day’s detection summary`
+      : displayStyle(state) === "field_guide" ? "Today’s birds arranged as a field-guide plate"
+      : "Today’s birds, arranged as a natural history illustration";
     const source = `${imageMode === "paper" ? "/preview.png" : "/art.png"}?v=${encodeURIComponent(revision)}`;
     byId("download-image").href = source;
     byId("download-image").download = imageMode === "paper" ? "heard-today-epaper.png" : "heard-today.png";
     byId("picture-paper").classList.toggle("landscape", (state.display_settings || state.settings)?.orientation === "landscape");
     byId("preview-note").textContent = imageMode === "paper"
-      ? "The frame’s six-color pixel preview. The physical e-paper display will look different from this screen. Battery status is added by the frame itself."
-      : "The composition sent to your frame. Screen colors and the physical e-paper display will differ. Battery status is added by the frame itself.";
+      ? "The frame’s six-color pixel preview. The physical e-paper display will look different from this screen."
+      : "The composition sent to your frame. Screen colors and the physical e-paper display will differ.";
     if (key === imageKey) return;
     imageKey = key;
     const requestId = ++imageRequest;
@@ -386,10 +472,12 @@
     byId("collection-date").textContent = day ? day.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }) : "Today's collection";
     const updated = dateValue(state.last_success);
     byId("updated-at").textContent = updated ? `Updated ${updated.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "";
-    const scale = state.settings?.scale;
-    byId("picture-caption").textContent = scale === "equal" ? "Each species, an equal place on the page." : scale === "linear" ? "More often heard, more space on the page." : "The day’s frequent visitors, gently given more space.";
+    const scale = displaySettings(state).scale;
+    byId("picture-caption").textContent = displayStyle(state) === "classic" ? "A featured bird and the day’s detection summary."
+      : displayStyle(state) === "field_guide" ? "The day’s birds, arranged as an ordered field-guide plate."
+      : scale === "equal" ? "Each species, an equal place on the page." : scale === "linear" ? "More often heard, more space on the page." : "The day’s frequent visitors, gently given more space.";
     if (replaceDraft || !dirty) fillForm(state.settings || {});
-    renderSpecies(species);
+    renderSpecies(species, state);
     if (!state.stats) byId("species-empty").textContent = "Waiting for the first collection of detections.";
     else byId("species-empty").textContent = "No birds recorded in this collection yet. The picture will grow as detections arrive.";
     renderHourly(species);
@@ -397,6 +485,7 @@
     renderCredits(state);
     renderImage(state);
     renderSchedule(state);
+    renderDevice(state);
     showServiceMessage(state.error ? `The collection could not be updated: ${state.error}. Showing the last available picture and detections.` : "");
   }
 

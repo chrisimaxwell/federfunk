@@ -88,11 +88,35 @@
               <p id="species-empty" class="empty-note" hidden>No birds recorded in this collection yet. The picture will grow as detections arrive.</p>
             </section>
 
+            <section class="device-section" aria-labelledby="device-heading">
+              <div class="section-heading"><h2 id="device-heading">The frame</h2><span id="device-status" class="tiny-label">Waiting for a reading</span></div>
+              <div class="device-reading"><strong id="device-percent">—</strong><div><p id="device-charging">Battery status unavailable</p><p id="device-voltage" class="muted" hidden></p></div></div>
+              <p id="device-reported" class="field-help">No battery reading has been received yet.</p>
+              <p id="device-seen" class="field-help" hidden></p>
+              <p class="field-help">Readings update when the frame wakes. Battery percentage is an estimate.</p>
+            </section>
+
             <section class="settings-section" aria-labelledby="settings-heading">
               <div class="section-heading"><h2 id="settings-heading">Make it yours</h2><span class="tiny-label">On the picture</span></div>
               <form id="settings-form">
                 <fieldset id="settings-fields" disabled>
                   <legend class="sr-only">Picture settings</legend>
+                  <div class="field">
+                    <label for="style">Presentation</label>
+                    <select id="style" name="style" aria-describedby="style-help">
+                      <option value="collage">Naturalist collage</option>
+                      <option value="classic">Classic display</option>
+                      <option value="field_guide">Field guide</option>
+                    </select>
+                    <p id="style-help" class="field-help">An open arrangement of historical drawings, with room to breathe.</p>
+                  </div>
+                  <div id="classic-media-field" class="field" hidden>
+                    <label for="classic_media">Images</label>
+                    <select id="classic_media" name="classic_media">
+                      <option value="photos">Photos</option>
+                      <option value="drawings">Historical drawings</option>
+                    </select>
+                  </div>
                   <div class="toggle-list">
                     <label class="toggle-row" for="show_names"><span>Bird names</span><input type="checkbox" id="show_names" name="show_names" role="switch"><span class="switch" aria-hidden="true"></span></label>
                     <label class="toggle-row" for="show_scientific"><span>Scientific names</span><input type="checkbox" id="show_scientific" name="show_scientific" role="switch"><span class="switch" aria-hidden="true"></span></label>
@@ -208,7 +232,7 @@
         <section id="sources-section" class="sources-section" aria-labelledby="sources-heading" hidden>
           <details>
             <summary id="sources-heading">From the naturalist’s library <span class="muted">Illustration credits &amp; sources</span></summary>
-            <p class="small muted">Historical illustrations, collected with their original sources. Credits apply to the drawings in this collection.</p>
+            <p id="credits-description" class="small muted">Historical illustrations, collected with their original sources. Credits apply to the drawings in this collection.</p>
             <ul id="artwork-credits"></ul>
           </details>
         </section>

@@ -272,18 +272,17 @@ Edit the non-secret settings in `src/BatteryConfig.h`, then rebuild/upload:
 
 ```cpp
 constexpr bool enabled = true;
-constexpr bool showOnlyWhenLow = false;
-constexpr float lowVoltage = 3.5f;
-constexpr float recoveryHysteresis = 0.1f;
+constexpr unsigned lowPercentage = 15;
 ```
 
-The local setup always shows the battery percentage and charging status.
-A red battery symbol and exclamation mark appear below **3.5 V**. The warning stays until
-the voltage reaches **3.6 V** to avoid toggling around the threshold. Set
-`showOnlyWhenLow = true` to hide the badge at normal voltage, or
-`enabled = false` to leave the image untouched.
-The badge covers only a 384×56-pixel rectangle, 16 pixels from the left and
-bottom edges; reserve that corner in your backend layout if needed.
+The frame shows only a small red battery icon and percentage, strictly below
+**15%**. It disappears as soon as a valid estimate reaches **15%**; there is
+no hysteresis that leaves a warning visible above that threshold. Charging
+status appears only on the dashboard. Set `enabled = false` to disable battery
+sampling and the badge. The badge covers a 160×48-pixel rectangle, 16 pixels
+from the logical canvas's left and bottom edges. The large driver rotates that
+rectangle with the rest of the canvas; portrait artwork uses the inverse
+rotation described in the Naturalist renderer.
 
 Charging status is read from the ETA6098 STAT signal on GPIO38, using 32
 samples before Wi-Fi/display power. Stable LOW means `CHARGING`, stable HIGH
@@ -292,14 +291,24 @@ means `NOT CHARGING`, and an unstable/invalid reading means `UNKNOWN`.
 USB-power reading. The owner confirmed a connected battery, recorded in
 `batteryConfig::batteryInstalled`; set it false if the battery is removed
 because STAT can also assert without a battery. This code reads the status
-only and does not change charger settings. The displayed status is sampled
-at each wake, not continuously during the 30-minute sleep interval.
+only and does not change charger settings. Status is sampled at each wake,
+not continuously during the sleep interval, and never changes frame pixels.
 
 Battery is sampled once each wake, before Wi-Fi and panel power are enabled,
 using 32 samples with outliers removed. A voltage change alone does not
 trigger refresh: only a change to the visible badge does. Percentages are
-rounded to `percentageStep` (5% by default) to reduce noise-driven refreshes.
+whole-percent estimates; the trimmed sampling reduces occasional ADC noise.
 An invalid reading retains the previous indicator, not a fabricated 0%.
+
+The existing image GET also carries valid battery telemetry in
+`X-FederFunk-Battery-Percent` (integer 0–100),
+`X-FederFunk-Battery-Voltage` (volts, two decimals), and
+`X-FederFunk-Charging` (`charging`, `not_charging`, or `unknown`). This adds no
+network request, including when the server returns an overnight hold. The
+dashboard records when it last received a reading. Invalid ADC readings, an
+unconfirmed/removed battery, and the small-board profile omit all three
+headers. Charging telemetry is separate from the cached display fingerprint,
+so charging transitions alone cannot trigger an e-paper refresh.
 
 The original, unmodified source image stays in LittleFS. If HTTP returns 304
 but the badge needs to appear, disappear, or change, the firmware verifies
@@ -312,8 +321,8 @@ previous successful update in the current power session.
 
 Percentage is only a voltage-based estimate, **not a fuel-gauge measurement**.
 `emptyVoltage` (3.3 V) and `fullVoltage` (4.2 V) set its linear scale; adjust
-for your battery. Charging and load affect the estimate. The voltage threshold
-uses the measured voltage directly, independently of that percentage scale.
+for your battery. Charging and load affect the estimate. The low-warning
+threshold uses this same whole-percent estimate.
 Compare the logged voltage with a multimeter on your actual board; set
 `voltageCalibration` to *actual voltage / logged voltage* if correction is
 needed. This is an advisory display feature, not a battery cutoff or charge
